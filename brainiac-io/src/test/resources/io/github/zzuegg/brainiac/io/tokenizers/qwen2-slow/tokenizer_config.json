@@ -1,0 +1,31 @@
+{
+ "tokenizer_class": "Qwen2Tokenizer",
+ "added_tokens_decoder": {
+  "0": {
+   "content": "<|endoftext|>",
+   "lstrip": false,
+   "normalized": false,
+   "rstrip": false,
+   "single_word": false,
+   "special": true
+  },
+  "1": {
+   "content": "<|im_start|>",
+   "lstrip": false,
+   "normalized": false,
+   "rstrip": false,
+   "single_word": false,
+   "special": true
+  },
+  "2": {
+   "content": "<|im_end|>",
+   "lstrip": false,
+   "normalized": false,
+   "rstrip": false,
+   "single_word": false,
+   "special": true
+  }
+ },
+ "eos_token": "<|im_end|>",
+ "bos_token": null
+}

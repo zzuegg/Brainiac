@@ -185,6 +185,25 @@ public interface ChatProvider {
     }
 
     /**
+     * Speaks a text with one of this provider's speech models, as described in words where the
+     * model follows instructions (by default the words are dropped).
+     *
+     * @param model the model's id
+     * @param text what to say
+     * @param voice the voice, or an empty string for the model's own
+     * @param speed 1 for the usual speed
+     * @param instructions how to say it, or an empty string
+     * @param stop asked now and then whether to give up
+     * @return the audio, a WAV
+     * @throws IOException if it has no such model or the speaking fails
+     * @throws InterruptedException if interrupted while waiting
+     */
+    default Media speak(String model, String text, String voice, double speed, String instructions,
+            java.util.function.BooleanSupplier stop) throws IOException, InterruptedException {
+        return speak(model, text, voice, speed, stop);
+    }
+
+    /**
      * Writes down a recording with one of this provider's transcribing models.
      *
      * @param model the model's id

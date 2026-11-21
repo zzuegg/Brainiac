@@ -25,7 +25,10 @@ public final class SpeechModels {
     public enum Kind {
         /** A Whisper model: speech to text. */
         SPEECH_TO_TEXT,
-        /** A text-to-speech model: Kokoro, F5-TTS (with Vocos), Orpheus (with SNAC), or VITS (MMS-TTS and others). */
+        /**
+         * A text-to-speech model: Kokoro, F5-TTS (with Vocos), Orpheus (with SNAC), Qwen3-TTS or VITS
+         * (MMS-TTS and others).
+         */
         TEXT_TO_SPEECH
     }
 
@@ -40,7 +43,8 @@ public final class SpeechModels {
      * @return the kind, or empty if it is not a speech model Brainiac can load
      */
     public static Optional<Kind> kind(Path dir) {
-        if (Kokoro.isKokoro(dir) || F5Speech.isF5(dir) || OrpheusSpeech.isOrpheus(dir)) {
+        if (Kokoro.isKokoro(dir) || F5Speech.isF5(dir) || OrpheusSpeech.isOrpheus(dir)
+                || Qwen3Speech.isQwen3Tts(dir)) {
             return Optional.of(Kind.TEXT_TO_SPEECH);
         }
         return switch (modelType(dir)) {
@@ -85,7 +89,9 @@ public final class SpeechModels {
      *
      * @param dir a Kokoro folder (hexgrad/Kokoro-82M), an F5-TTS folder (SWivid/F5-TTS, with
      *     charactr/vocos-mel-24khz in or next to it), an Orpheus folder
-     *     (canopylabs/orpheus-3b-0.1-ft, with hubertsiuzdak/snac_24khz in or next to it) or a Hugging Face VITS folder, such as facebook/mms-tts-eng
+     *     (canopylabs/orpheus-3b-0.1-ft, with hubertsiuzdak/snac_24khz in or next to it), a Qwen3-TTS
+     *     folder (Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice, -VoiceDesign or -Base) or a Hugging Face VITS
+     *     folder, such as facebook/mms-tts-eng
      * @param device where it runs
      * @param dtype the type of its weights
      * @return the model, loaded until closed
@@ -94,8 +100,8 @@ public final class SpeechModels {
     public static TextToSpeech textToSpeech(Path dir, Device device, DType dtype) {
         if (kind(dir).orElse(null) != Kind.TEXT_TO_SPEECH) {
             throw new IllegalArgumentException(dir + " is not a text-to-speech model; expected a Kokoro folder"
-                    + " (hexgrad/Kokoro-82M) or a Hugging Face VITS folder (config.json with model_type vits), such"
-                    + " as facebook/mms-tts-eng");
+                    + " (hexgrad/Kokoro-82M), F5-TTS, Orpheus, Qwen3-TTS (Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice) or a"
+                    + " Hugging Face VITS folder (config.json with model_type vits), such as facebook/mms-tts-eng");
         }
         if (Kokoro.isKokoro(dir)) {
             return KokoroSpeech.load(dir, device, dtype);
@@ -105,6 +111,9 @@ public final class SpeechModels {
         }
         if (OrpheusSpeech.isOrpheus(dir)) {
             return OrpheusSpeech.load(dir, device, dtype);
+        }
+        if (Qwen3Speech.isQwen3Tts(dir)) {
+            return Qwen3Speech.load(dir, device, dtype);
         }
         return VitsSpeech.load(dir, device, dtype);
     }

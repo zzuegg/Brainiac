@@ -1111,7 +1111,7 @@ public final class ChatService {
         return routed("speech", resolve(model, "speech"), target -> {
             ChatProvider where = provider(target.provider());
             if (where.runsMedia()) {
-                Media wav = logged(target, "speech", () -> where.speak(target.id(), text, voice, speed, () -> false),
+                Media wav = logged(target, "speech", () -> where.speak(target.id(), text, voice, speed, instructions, () -> false),
                         r -> new long[] {-1, -1, text.length()});
                 return new Generated(target, List.of(wav), save(List.of(wav), "speech"));
             }

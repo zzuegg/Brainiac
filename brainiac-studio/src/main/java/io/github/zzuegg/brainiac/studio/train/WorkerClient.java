@@ -419,11 +419,30 @@ public final class WorkerClient {
      */
     public io.github.zzuegg.brainiac.studio.chat.Media speak(String model, String text, String voice, double speed)
             throws IOException {
+        return speak(model, text, voice, speed, "");
+    }
+
+    /**
+     * Has the worker speak a text with one of its speech models, as described in words.
+     *
+     * @param model the worker's model id
+     * @param text what to say
+     * @param voice the voice, or an empty string for the model's own
+     * @param speed 1 for the usual speed
+     * @param instructions how to say it, or an empty string
+     * @return the audio
+     * @throws IOException if the worker fails
+     */
+    public io.github.zzuegg.brainiac.studio.chat.Media speak(String model, String text, String voice, double speed,
+            String instructions) throws IOException {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
         body.put("text", text);
         body.put("voice", voice == null ? "" : voice);
         body.put("speed", speed);
+        if (instructions != null && !instructions.isBlank()) {
+            body.put("instructions", instructions);
+        }
         Map<String, Object> d = stream("worker/speak", body, "speak", (event, x) -> true);
         return new io.github.zzuegg.brainiac.studio.chat.Media(
                 java.util.Base64.getDecoder().decode(Json.string(d, "data", "")), Json.string(d, "mime", "audio/wav"));

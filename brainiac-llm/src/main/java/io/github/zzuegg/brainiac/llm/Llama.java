@@ -1825,6 +1825,23 @@ public final class Llama implements LanguageModel {
         return new Tensor[] {logits, hidden[0]};
     }
 
+    /**
+     * As {@link #nextWithHidden(State, int[][], boolean[][])}, with outside embeddings in
+     * place of a placeholder token (see {@link #forward(int[][], int, Tensor)}). A model
+     * that reads only embeddings, such as a speech model whose every input is a sum of
+     * codec and text embeddings, passes the placeholder at every step.
+     *
+     * @param state the state; updated
+     * @param tokens the new tokens per sequence
+     * @param placeholder the token the embeddings replace
+     * @param embeddings {@code [occurrences, hidden]}, in order
+     * @return the next-token logits {@code [batch, vocab]} and the hidden states
+     *     {@code [batch, steps, hidden]}, both float32
+     */
+    public Tensor[] nextWithHidden(State state, int[][] tokens, int placeholder, Tensor embeddings) {
+        return inserting(placeholder, embeddings, false, () -> nextWithHidden(state, tokens, null));
+    }
+
     /** How {@link #embed} turns a sequence's hidden states into one vector. */
     public enum Pooling {
         /** The last token's hidden state, as Qwen3-Embedding and other decoder embedders do. */

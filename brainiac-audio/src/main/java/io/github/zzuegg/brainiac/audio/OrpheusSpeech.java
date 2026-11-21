@@ -245,6 +245,11 @@ public final class OrpheusSpeech implements TextToSpeech {
 
     /** Sentences grouped into pieces of at most {@link #MAX_CHARS} characters (longer sentences stay whole). */
     static List<String> pieces(String text) {
+        return pieces(text, MAX_CHARS);
+    }
+
+    /** Sentences grouped into pieces of at most {@code maxChars} characters (longer sentences stay whole). */
+    static List<String> pieces(String text, int maxChars) {
         List<String> out = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
         for (String line : text.split("\\n+")) {
@@ -252,7 +257,7 @@ public final class OrpheusSpeech implements TextToSpeech {
                 if (s.isBlank()) {
                     continue;
                 }
-                if (!cur.isEmpty() && cur.length() + 1 + s.length() > MAX_CHARS) {
+                if (!cur.isEmpty() && cur.length() + 1 + s.length() > maxChars) {
                     out.add(cur.toString());
                     cur.setLength(0);
                 }

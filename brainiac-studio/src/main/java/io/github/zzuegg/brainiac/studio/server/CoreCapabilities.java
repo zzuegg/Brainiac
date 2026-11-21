@@ -67,7 +67,8 @@ public final class CoreCapabilities implements CapabilityProvider {
 
         if (present("io.github.zzuegg.brainiac.audio.TextToSpeech")) {
             out.add(Capability.available("speech.synthesize", Medium.SPEECH, "Text to speech",
-                    "Speak with Kokoro and VITS (MMS-TTS) voices on this PC, by name or blended", "brainiac-audio"));
+                    "Speak on this PC with Kokoro, VITS (MMS-TTS), F5-TTS, Orpheus and Qwen3-TTS, in their voices"
+                            + " or cloned ones", "brainiac-audio"));
             out.add(Capability.available("speech.transcribe", Medium.SPEECH, "Transcribe",
                     "Whisper writes down speech, with timings and translation to English", "brainiac-audio"));
         } else {

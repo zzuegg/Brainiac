@@ -5,6 +5,7 @@ import io.github.zzuegg.brainiac.audio.F5Speech;
 import io.github.zzuegg.brainiac.audio.F5Tts;
 import io.github.zzuegg.brainiac.audio.Kokoro;
 import io.github.zzuegg.brainiac.audio.OrpheusSpeech;
+import io.github.zzuegg.brainiac.audio.Qwen3Speech;
 import io.github.zzuegg.brainiac.audio.SpeechModels;
 import io.github.zzuegg.brainiac.audio.SpeechToText;
 import io.github.zzuegg.brainiac.audio.TextToSpeech;
@@ -31,8 +32,8 @@ import java.util.stream.Stream;
 
 /**
  * The speech models on this PC, found in the same places as the language models: Whisper, which
- * writes down what is said, and Kokoro, F5-TTS, Orpheus or VITS (MMS-TTS), which speak. F5-TTS speaks
- * in voices made from recordings, which are kept in the studio's data folder. One of each is kept loaded, on the best device, with 32-bit weights.
+ * writes down what is said, and Kokoro, F5-TTS, Orpheus, Qwen3-TTS or VITS (MMS-TTS), which speak. F5-TTS
+ * and the Qwen3-TTS Base models speak in voices made from recordings, which are kept in the studio's data folder. One of each is kept loaded, on the best device, with 32-bit weights.
  */
 public final class LocalSpeech {
 
@@ -49,7 +50,7 @@ public final class LocalSpeech {
     public record Listening(String language, boolean translate, boolean timestamps, String prompt) {
     }
 
-    // family: whisper, kokoro, f5, orpheus or vits
+    // family: whisper, kokoro, f5, orpheus, qwen3 or vits
     private record Found(FileTime modified, Optional<SpeechModels.Kind> kind, String family) {
     }
 
@@ -115,6 +116,11 @@ public final class LocalSpeech {
                         case "kokoro" -> "Kokoro text to speech";
                         case "f5" -> "F5-TTS voice cloning";
                         case "orpheus" -> "Orpheus text to speech";
+                        case "qwen3" -> switch (Qwen3Speech.kind(e.getValue()).orElseThrow()) {
+                            case BASE -> "Qwen3-TTS voice cloning";
+                            case VOICE_DESIGN -> "Qwen3-TTS voice design";
+                            case CUSTOM_VOICE -> "Qwen3-TTS text to speech";
+                        };
                         default -> "VITS text to speech";
                     }));
         }
@@ -176,7 +182,8 @@ public final class LocalSpeech {
                     family = k.get() == SpeechModels.Kind.SPEECH_TO_TEXT ? "whisper"
                             : Kokoro.isKokoro(p) ? "kokoro"
                             : F5Speech.isF5(p) ? "f5"
-                            : OrpheusSpeech.isOrpheus(p) ? "orpheus" : "vits";
+                            : OrpheusSpeech.isOrpheus(p) ? "orpheus"
+                            : Qwen3Speech.isQwen3Tts(p) ? "qwen3" : "vits";
                 }
             } catch (RuntimeException e) {
                 k = Optional.empty();
@@ -210,6 +217,33 @@ public final class LocalSpeech {
                     .forEach(n -> out.put(n.substring(0, n.length() - 4), n.substring(0, n.length() - 4)));
         } catch (IOException e) {
             // unreadable: no voices of its own
+        }
+        return out;
+    }
+
+    // whether a model speaks in voices made from recordings
+    private boolean clones(Path p) {
+        return switch (family(p)) {
+            case "f5" -> true;
+            case "qwen3" -> Qwen3Speech.kind(p).orElse(null) == Qwen3Speech.Kind.BASE;
+            default -> false;
+        };
+    }
+
+    // a Qwen3-TTS CustomVoice model's speakers, from its config.json, without loading it
+    private static Map<String, String> qwen3Speakers(Path dir) {
+        Map<String, String> out = new LinkedHashMap<>();
+        try {
+            Map<String, Object> c = io.github.zzuegg.brainiac.io.Json.object(
+                    io.github.zzuegg.brainiac.io.Json.read(dir.resolve("config.json")));
+            if (c.get("talker_config") instanceof Map<?, ?> t && t.get("spk_id") instanceof Map<?, ?> ids) {
+                ids.keySet().forEach(k -> {
+                    String n = String.valueOf(k);
+                    out.put(n, n.isEmpty() ? n : n.substring(0, 1).toUpperCase(Locale.ROOT) + n.substring(1));
+                });
+            }
+        } catch (IOException | RuntimeException e) {
+            // unreadable: no voices listed until it is loaded
         }
         return out;
     }
@@ -254,7 +288,7 @@ public final class LocalSpeech {
      */
     void saveVoice(String id, String name, byte[] wav, String transcript) throws IOException {
         Path p = path(id, SpeechModels.Kind.TEXT_TO_SPEECH);
-        if (!"f5".equals(family(p)) || saved == null) {
+        if (!clones(p) || saved == null) {
             throw new IllegalArgumentException(id + " does not speak in voices made from recordings");
         }
         if (name == null || !VOICE_NAME.matcher(name).matches()) {
@@ -274,6 +308,8 @@ public final class LocalSpeech {
         try {
             if (voice instanceof F5Speech f5 && p.equals(voicePath)) {
                 f5.addVoice(name, a, transcript.strip());
+            } else if (voice instanceof Qwen3Speech q && p.equals(voicePath)) {
+                q.addVoice(name, a, transcript.strip());
             }
         } finally {
             speaking.unlock();
@@ -381,7 +417,10 @@ public final class LocalSpeech {
         if (v != null && p != null && p.equals(voicePath)) {
             Map<String, String> names = new LinkedHashMap<>();
             v.voices().forEach(x -> names.put(x.id(), x.name()));
-            return options(names, v.canMixVoices(), v.tags(), v.canClone());
+            if (v instanceof Qwen3Speech) {
+                savedVoices(id).keySet().forEach(n -> names.putIfAbsent(n, n));
+            }
+            return options(names, v.canMixVoices(), v.tags(), v.canClone(), v.followsInstructions());
         }
         String family = p == null ? "" : family(p);
         return switch (family) {
@@ -396,15 +435,33 @@ public final class LocalSpeech {
                 savedVoices(id).keySet().forEach(n -> names.put(n, n));
                 yield options(names, false, List.of(), true);
             }
+            case "qwen3" -> {
+                Qwen3Speech.Kind k = Qwen3Speech.kind(p).orElse(Qwen3Speech.Kind.BASE);
+                Map<String, String> names = switch (k) {
+                    case CUSTOM_VOICE -> qwen3Speakers(p);
+                    case VOICE_DESIGN -> new LinkedHashMap<>(Map.of("designed", "Designed voice"));
+                    case BASE -> new LinkedHashMap<>();
+                };
+                if (k == Qwen3Speech.Kind.BASE) {
+                    savedVoices(id).keySet().forEach(n -> names.put(n, n));
+                }
+                // the 0.6B CustomVoice model ignores instructions; that shows once it is loaded
+                yield options(names, false, List.of(), k == Qwen3Speech.Kind.BASE, k != Qwen3Speech.Kind.BASE);
+            }
             default -> options(Map.of(), false, List.of(), false);
         };
     }
 
     // tags go to the page without their brackets: <laugh> is offered as laugh
     private static SpeechOptions options(Map<String, String> names, boolean mix, List<String> tags, boolean clone) {
+        return options(names, mix, tags, clone, false);
+    }
+
+    private static SpeechOptions options(Map<String, String> names, boolean mix, List<String> tags, boolean clone,
+            boolean instructions) {
         List<String> voices = names.isEmpty() && !clone ? List.of("default") : List.copyOf(names.keySet());
         List<String> plain = tags.stream().map(t -> t.replaceAll("^<|>$", "")).toList();
-        return new SpeechOptions(voices, true, false, List.of("wav"), names, mix, plain, clone);
+        return new SpeechOptions(voices, true, instructions, List.of("wav"), names, mix, plain, clone);
     }
 
     /**
@@ -419,6 +476,23 @@ public final class LocalSpeech {
      * @throws IOException if the model cannot be loaded
      */
     Media speak(String id, String text, String voiceId, double speed, BooleanSupplier stop) throws IOException {
+        return speak(id, text, voiceId, speed, "", stop);
+    }
+
+    /**
+     * Speaks text, in a way described in words where the model follows instructions.
+     *
+     * @param id the model's name
+     * @param text the words
+     * @param voiceId the voice
+     * @param speed 1 for normal pace
+     * @param instructions how to say it, such as "cheerful, quick", or an empty string
+     * @param stop says when to stop
+     * @return the audio, as WAV
+     * @throws IOException if the model cannot be loaded
+     */
+    Media speak(String id, String text, String voiceId, double speed, String instructions, BooleanSupplier stop)
+            throws IOException {
         speaking.lock();
         try {
             TextToSpeech tts = loadVoice(id);
@@ -427,6 +501,9 @@ public final class LocalSpeech {
             if (voiceId != null && !voiceId.isBlank() && (tts.voices().stream().anyMatch(v -> v.id().equals(voiceId))
                     || (tts.canMixVoices() && voiceId.matches("[A-Za-z0-9_]+(\\*[0-9.]+)?([+,][A-Za-z0-9_]+(\\*[0-9.]+)?)+")))) {
                 o = o.voice(voiceId);
+            }
+            if (instructions != null && !instructions.isBlank() && tts.followsInstructions()) {
+                o = o.instruction(instructions);
             }
             Audio a = tts.synthesize(text, o, null);
             return new Media(Wav.encode(a), "audio/wav");
@@ -449,6 +526,10 @@ public final class LocalSpeech {
             if (t instanceof F5Speech f5) {
                 for (Map.Entry<String, String> e : savedVoices(id).entrySet()) {
                     f5.addVoice(e.getKey(), Wav.read(savedDir(id).resolve(e.getKey() + ".wav")), e.getValue());
+                }
+            } else if (t instanceof Qwen3Speech q && q.canClone()) {
+                for (Map.Entry<String, String> e : savedVoices(id).entrySet()) {
+                    q.addVoice(e.getKey(), Wav.read(savedDir(id).resolve(e.getKey() + ".wav")), e.getValue());
                 }
             }
             LOG.log(System.Logger.Level.INFO, "loaded " + p.getFileName() + " to speak on " + d);
