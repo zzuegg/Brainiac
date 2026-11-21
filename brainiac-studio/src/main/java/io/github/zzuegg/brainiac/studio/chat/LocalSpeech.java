@@ -421,9 +421,14 @@ public final class LocalSpeech {
         return DType.FLOAT32;
     }
 
+    // the language-model speakers run in bfloat16 on a GPU, as they were trained: Fish S2-Pro's
+    // 4.5 billion weights in float32 take 18 GB and spilled out of a 16 GB card until it was lost
     private static DType dtype(Device d, String family) {
-        return "orpheus".equals(family) && d.kind() == Device.Kind.GPU && d.supports(DType.BFLOAT16) ? DType.BFLOAT16
-                : dtype(d);
+        return switch (family) {
+            case "orpheus", "fish", "qwen3" -> d.kind() == Device.Kind.GPU && d.supports(DType.BFLOAT16) ? DType.BFLOAT16
+                    : dtype(d);
+            default -> dtype(d);
+        };
     }
 
     /**
@@ -547,8 +552,10 @@ public final class LocalSpeech {
         if (voice != null && p.equals(voicePath) && d.name().equals(voiceOn)) {
             return voice;
         }
-        return speaking.load(id, p, d, () -> false, () -> {
-            TextToSpeech t = SpeechModels.textToSpeech(p, d, dtype(d, family(p)));
+        DType type = dtype(d, family(p));
+        // measured apart from the float32 loads of earlier versions, which took twice the room
+        return speaking.load(id, p, d, type == DType.FLOAT32 ? "" : type.name().toLowerCase(Locale.ROOT), () -> false, () -> {
+            TextToSpeech t = SpeechModels.textToSpeech(p, d, type);
             voice = t;
             voiceOn = d.name();
             voicePath = p;

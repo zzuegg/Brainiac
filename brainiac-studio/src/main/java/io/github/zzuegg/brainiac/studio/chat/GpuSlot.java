@@ -111,11 +111,22 @@ final class GpuSlot {
      */
     <T> T load(String name, Path path, Device device, BooleanSupplier cancelled, Loader<T> loader, Runnable unload)
             throws IOException {
+        return load(name, path, device, "", cancelled, loader, unload);
+    }
+
+    /**
+     * As {@link #load(String, Path, Device, BooleanSupplier, Loader, Runnable)}, for a model
+     * that can load in several forms (such as its number type), each measured on its own.
+     *
+     * @param variant the form, such as {@code "bf16"}; empty for the plain one
+     */
+    <T> T load(String name, Path path, Device device, String variant, BooleanSupplier cancelled, Loader<T> loader,
+            Runnable unload) throws IOException {
         if (!lock.isHeldByCurrentThread()) {
             throw new IllegalStateException("hold the slot to load into it");
         }
         forget();
-        String k = key(path, device);
+        String k = variant.isEmpty() ? key(path, device) : key(path, device) + "#" + variant;
         residency.admit(this, name, device, need(k, path, device), cancelled);
         long before = residency.inUse(device);
         T t = loader.load();
