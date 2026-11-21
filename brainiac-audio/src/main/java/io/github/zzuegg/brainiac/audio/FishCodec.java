@@ -33,6 +33,8 @@ final class FishCodec implements AutoCloseable {
     /** Frames decoded at a time, and the frames of context before each chunk. */
     static final int CHUNK = 400;
     static final int CONTEXT = 64;
+    /** Latent steps the waveform decoder renders at once (32 frames). */
+    static final int TILE = 128;
 
     private final Weights w;
     private final Device device;
@@ -164,6 +166,8 @@ final class FishCodec implements AutoCloseable {
     private final CausalConv decOut;
     private final int hop;
     private final int frame;
+    /** Latent steps per waveform tile; tests change it. */
+    int tile = TILE;
 
     FishCodec(WeightSource source, Device device, DType dtype) {
         this.device = device;
@@ -474,15 +478,64 @@ final class FishCodec implements AutoCloseable {
         for (int i = 0; i < ups.size(); i++) {
             x = Vocos.settle(upNexts.get(i).apply(ups.get(i).apply(x)));
         }
-        x = Vocos.settle(decIn.apply(x));
+        return waveform(Vocos.settle(x));
+    }
+
+    /**
+     * The waveform decoder over {@code [1, channels, steps]}, in tiles of {@link #TILE} steps,
+     * each after as many steps before it as the causal decoder looks back: its activations at
+     * 44.1 kHz would otherwise take gigabytes for a long piece.
+     */
+    private float[] waveform(Var x) {
+        int steps = x.shape().dim(2);
+        int up = 1;
         for (DecoderBlock b : decBlocks) {
-            x = Vocos.settle(b.up().apply(b.act().apply(x)));
-            for (Unit u : b.units()) {
-                x = Vocos.settle(u.apply(x));
-            }
+            up *= b.up().stride();
         }
-        x = decOut.apply(decAct.apply(x)).tanh();
-        return x.to(DType.FLOAT32).value().toArray();
+        int context = lookBack();
+        float[] out = new float[steps * up];
+        for (int start = 0; start < steps; start += tile) {
+            int end = Math.min(steps, start + tile);
+            int from = Math.max(0, start - context);
+            List<Tensor> made = new ArrayList<>();
+            Var tile = from == 0 && end == steps ? x : Vocos.settle(x.slice(2, from, end));
+            made.add(tile.value());
+            Var y = Vocos.settle(decIn.apply(tile));
+            made.add(y.value());
+            for (DecoderBlock b : decBlocks) {
+                y = Vocos.settle(b.up().apply(b.act().apply(y)));
+                made.add(y.value());
+                for (Unit u : b.units()) {
+                    y = Vocos.settle(u.apply(y));
+                    made.add(y.value());
+                }
+            }
+            Tensor wave = decOut.apply(decAct.apply(y)).tanh().to(DType.FLOAT32).value();
+            System.arraycopy(wave.toArray(), (start - from) * up, out, start * up, (end - start) * up);
+            made.add(wave);
+            // the tiles' activations go at once, not when the collector finds them
+            Tensor.release(made, List.of(x.value()));
+        }
+        return out;
+    }
+
+    /** The steps before a sample that the waveform decoder reads, counted back from its output. */
+    private int lookBack() {
+        long rf = reach(decOut);
+        for (int i = decBlocks.size() - 1; i >= 0; i--) {
+            DecoderBlock b = decBlocks.get(i);
+            for (Unit u : b.units()) {
+                rf += reach(u.c1()) + reach(u.c2());
+            }
+            int k = b.up().w().shape().dim(2);
+            int s = b.up().stride();
+            rf = (rf + k - 1 + s - 1) / s;
+        }
+        return (int) (rf + reach(decIn) + 1);
+    }
+
+    private static long reach(CausalConv c) {
+        return (long) (c.w().shape().dim(2) - 1) * c.dilation();
     }
 
     @Override

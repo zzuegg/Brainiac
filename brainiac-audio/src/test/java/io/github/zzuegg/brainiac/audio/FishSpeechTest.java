@@ -68,6 +68,20 @@ class FishSpeechTest {
     }
 
     @Test
+    void codecDecodesTheSameInTiles() {
+        int[][] codes = ints2(expected.get("decode_codes"));
+        FishCodec codec = tts.codec();
+        try {
+            codec.tile = Integer.MAX_VALUE;
+            float[] whole = codec.decode(codes);
+            codec.tile = 7;
+            close(whole, codec.decode(codes), 1e-4, "tiled sample");
+        } finally {
+            codec.tile = FishCodec.TILE;
+        }
+    }
+
+    @Test
     void samplingFiltersAsTheReference() {
         float[] logits = WhisperTest.floats(expected.get("sample_logits"));
         List<Object> probs = Json.array(expected.get("sample_probs"));
