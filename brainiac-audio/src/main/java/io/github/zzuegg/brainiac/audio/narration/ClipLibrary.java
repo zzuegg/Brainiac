@@ -226,6 +226,38 @@ public final class ClipLibrary {
     }
 
     /**
+     * How much slower the pieces are said than whole lines: the median seconds per letter of
+     * the pieces over that of the whole lines. Words said alone in a carrier are drawn out a
+     * little against running speech, so a line put together from them is sped up by this much.
+     *
+     * @return the ratio, or {@code NaN} if the library has no pieces or no whole lines
+     */
+    public double pieceSlowdown() {
+        List<Double> piece = new ArrayList<>();
+        List<Double> full = new ArrayList<>();
+        for (Clip c : clips()) {
+            int letters = (int) c.text().codePoints().filter(Character::isLetter).count();
+            if (letters < 3) {
+                continue;
+            }
+            Audio a = audio(c);
+            int[] sp = AudioTools.speech(AudioTools.envelope(a.samples(), a.sampleRate()));
+            double perLetter = (sp[1] - sp[0] + 1) / (double) AudioTools.FRAME_RATE / letters;
+            (c.kind().equals(FULL) ? full : piece).add(perLetter);
+        }
+        if (piece.isEmpty() || full.isEmpty()) {
+            return Double.NaN;
+        }
+        return median(piece) / median(full);
+    }
+
+    private static double median(List<Double> v) {
+        List<Double> sorted = new ArrayList<>(v);
+        sorted.sort(null);
+        return sorted.get(sorted.size() / 2);
+    }
+
+    /**
      * A clip's audio, read once and kept.
      *
      * @param clip the clip

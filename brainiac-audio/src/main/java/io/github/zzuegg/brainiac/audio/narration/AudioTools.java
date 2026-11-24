@@ -158,6 +158,74 @@ final class AudioTools {
         }
     }
 
+    /**
+     * Changes the tempo of speech without changing its pitch (WSOLA: overlapping 30 ms frames
+     * taken at a different hop than they are laid down, each shifted by up to 10 ms to line up
+     * with the waveform already written).
+     *
+     * @param x the samples
+     * @param rate the sample rate
+     * @param speed how much faster, such as 1.2; 1 returns a copy
+     * @return the samples, about {@code x.length / speed} long
+     */
+    static float[] stretch(float[] x, int rate, double speed) {
+        if (Math.abs(speed - 1) < 1e-3 || x.length == 0) {
+            return x.clone();
+        }
+        int n = Math.max(16, (int) (rate * 0.03));
+        int hs = n / 2;
+        int tol = (int) (rate * 0.01);
+        int outLen = (int) Math.round(x.length / speed);
+        double[] out = new double[outLen + n];
+        double[] norm = new double[outLen + n];
+        double[] w = new double[n];
+        for (int i = 0; i < n; i++) {
+            w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / n);
+        }
+        int prev = 0;
+        for (int k = 0; k * hs < outLen; k++) {
+            int pos;
+            if (k == 0) {
+                pos = 0;
+            } else {
+                int target = (int) Math.round(k * hs * speed);
+                int natural = prev + hs;
+                double best = Double.NEGATIVE_INFINITY;
+                pos = Math.max(0, Math.min(x.length - 1, target));
+                for (int d = -tol; d <= tol; d++) {
+                    int p = target + d;
+                    if (p < 0 || p >= x.length) {
+                        continue;
+                    }
+                    double c = 0;
+                    for (int i = 0; i < n; i += 2) {
+                        int a = p + i;
+                        int b = natural + i;
+                        if (a >= x.length || b >= x.length) {
+                            break;
+                        }
+                        c += (double) x[a] * x[b];
+                    }
+                    if (c > best) {
+                        best = c;
+                        pos = p;
+                    }
+                }
+            }
+            int at = k * hs;
+            for (int i = 0; i < n && pos + i < x.length; i++) {
+                out[at + i] += x[pos + i] * w[i];
+                norm[at + i] += w[i];
+            }
+            prev = pos;
+        }
+        float[] y = new float[outLen];
+        for (int i = 0; i < outLen; i++) {
+            y[i] = (float) (norm[i] > 1e-3 ? out[i] / norm[i] : out[i]);
+        }
+        return y;
+    }
+
     private static float[][] melBank(int rate, int nFft, int bands, double lo, double hi) {
         double mLo = 2595 * Math.log10(1 + lo / 700);
         double mHi = 2595 * Math.log10(1 + hi / 700);

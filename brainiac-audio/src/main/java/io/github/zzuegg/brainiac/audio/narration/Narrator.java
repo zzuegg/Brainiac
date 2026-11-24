@@ -10,8 +10,8 @@ import java.util.Map;
 /**
  * Speaks a game's lines from a {@link ClipLibrary}, with no speech model at run time. A line
  * recorded whole is played as recorded; any other line is put together from shared pieces
- * (numbers, operators, phrases), each said with the melody of its place and joined at pauses
- * the length of the speaker's own, then brought to one loudness.
+ * (numbers, operators, phrases), each said with the melody of its place, brought to the pace of
+ * running speech without changing its pitch, joined by short gaps and brought to one loudness.
  *
  * <pre>{@code
  * Narrator narrator = Narrator.open(Path.of("voice/de"));
@@ -43,26 +43,31 @@ public final class Narrator {
     /**
      * How lines are put together.
      *
-     * @param pauseScale the pauses between pieces, relative to the speaker's own between the
-     *     pieces of a carrier (1 for the same, less for brisker)
+     * @param gapSeconds the silence between pieces, as between the words of running speech
+     * @param speed how much faster pieces are played than recorded, keeping their pitch; 0 to
+     *     match the pace of the library's whole lines ({@link ClipLibrary#pieceSlowdown()})
      * @param targetLufs the loudness of every line
      * @param preferFull whether a line recorded whole is played instead of putting it together
      */
-    public record Settings(double pauseScale, double targetLufs, boolean preferFull) {
+    public record Settings(double gapSeconds, double speed, double targetLufs, boolean preferFull) {
+
+        /** The speed when the library has no whole lines to measure the pace of. */
+        public static final double DEFAULT_SPEED = 1.2;
 
         /**
-         * The defaults: pauses at 0.7 of the speaker's own, -16 LUFS, whole lines first.
+         * The defaults: 60 ms gaps, the pace of whole lines, -16 LUFS, whole lines first.
          *
          * @return the settings
          */
         public static Settings defaults() {
-            return new Settings(0.7, -16, true);
+            return new Settings(0.06, 0, -16, true);
         }
     }
 
     private final ClipLibrary library;
     private final NumberSpeller speller;
     private final Settings settings;
+    private double speed = Double.NaN;
 
     /**
      * A narrator for a library.
@@ -145,8 +150,8 @@ public final class Narrator {
 
     /**
      * Puts a line together from pieces: each unit (a number, an operator, a phrase) said with
-     * the melody of its place (continuing, or the line's ending), joined by pauses as long as
-     * the speaker's own between the pieces of a carrier, times {@link Settings#pauseScale()}.
+     * the melody of its place (continuing, or the line's ending), brought to the pace of
+     * running speech and joined by gaps as short as between its words.
      *
      * @param line the line
      * @return the spoken line
@@ -166,12 +171,13 @@ public final class Narrator {
             throw new IllegalStateException("not recorded: " + missing + " (for: " + line.text() + ")");
         }
         int rate = library.audio(used.get(0)).sampleRate();
-        double pause = Math.max(0.06, Math.min(0.35, library.pauseSeconds() * settings.pauseScale()));
-        int gap = (int) (pause * rate);
+        int gap = (int) (settings.gapSeconds() * rate);
+        double tempo = speed();
         List<float[]> parts = new ArrayList<>();
         int total = 0;
         for (ClipLibrary.Clip c : used) {
             float[] p = AudioTools.trim(library.audio(c).resample(rate).samples(), rate, 0.01);
+            p = AudioTools.stretch(p, rate, tempo);
             parts.add(p);
             total += p.length + gap;
         }
@@ -184,6 +190,25 @@ public final class Narrator {
         x = java.util.Arrays.copyOf(x, Math.max(0, at - gap));
         Audio a = Loudness.normalize(new Audio(x, rate), settings.targetLufs(), -1);
         return new Spoken(line.text(), a, Mode.SPLICED, used);
+    }
+
+    /**
+     * How much faster pieces are played than recorded.
+     *
+     * @return {@link Settings#speed()}, or if that is 0 the library's
+     *     {@link ClipLibrary#pieceSlowdown()} kept between 1 and 1.5, or
+     *     {@link Settings#DEFAULT_SPEED} if it cannot be measured
+     */
+    public synchronized double speed() {
+        if (Double.isNaN(speed)) {
+            double s = settings.speed();
+            if (s <= 0) {
+                double m = library.pieceSlowdown();
+                s = Double.isNaN(m) ? Settings.DEFAULT_SPEED : Math.max(1, Math.min(1.5, m));
+            }
+            speed = s;
+        }
+        return speed;
     }
 
     /**

@@ -119,6 +119,25 @@ class NarrationTest {
     }
 
     @Test
+    void stretchKeepsPitch() {
+        int rate = 24000;
+        float[] x = new float[rate];
+        for (int i = 0; i < x.length; i++) {
+            x[i] = (float) (0.5 * Math.sin(2 * Math.PI * 220 * i / rate));
+        }
+        float[] y = AudioTools.stretch(x, rate, 1.25);
+        assertEquals(x.length / 1.25, y.length, 2);
+        int crossings = 0;
+        for (int i = 1 + rate / 20; i < y.length - rate / 20; i++) {
+            if ((y[i - 1] < 0) != (y[i] < 0)) {
+                crossings++;
+            }
+        }
+        double hz = crossings / 2.0 / ((y.length - rate / 10.0) / rate);
+        assertTrue(Math.abs(hz - 220) < 6, "pitch kept: " + hz);
+    }
+
+    @Test
     void loudnessNormalizes() {
         int rate = 24000;
         float[] x = new float[rate * 2];
@@ -169,6 +188,7 @@ class NarrationTest {
         assertTrue(lib.pauseSeconds() > 0.1);
 
         Narrator n = Narrator.open(dir);
+        assertTrue(n.speed() >= 1 && n.speed() <= 1.5, "speed " + n.speed());
         Narrator.Spoken spoken = n.say(t.source(), Map.of("a", 4, "b", 2));
         assertEquals(Narrator.Mode.SPLICED, spoken.mode());
         assertEquals("was ist vier plus zwei", new ToneHearing(tts).words(spoken.audio()));
