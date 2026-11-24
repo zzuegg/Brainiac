@@ -769,34 +769,78 @@ public final class ClipMaker {
      * @return the sentences recorded
      */
     public List<LineTemplate.Line> fluentMath(int from, int to, String lead, String... operators) {
-        List<LineTemplate.Line> candidates = new ArrayList<>();
+        List<LineTemplate.Line> candidates = candidates(from, to, lead, operators);
+        java.util.Set<String> wanted = new java.util.LinkedHashSet<>();
+        for (LineTemplate.Line l : candidates) {
+            for (LineTemplate.Unit u : parts(l)) {
+                wanted.add(cell(u));
+            }
+        }
+        return chooseAndRecord(candidates, wanted, "for " + from + " to " + to);
+    }
+
+    /**
+     * Records, out of a few fluent sentences, just the pieces some lines need, to try them out:
+     * the sentences are other calculations and questions in the range (never the lines
+     * themselves), chosen to hold every piece of the lines in its place.
+     *
+     * @param lines the lines to be able to say, such as {@code MathReader.read("200 + 51 = 251")}
+     * @param from the smallest number in the sentences
+     * @param to the largest
+     * @param lead the question's lead-in, or {@code null}
+     * @param operators the operators the sentences may use
+     * @return the sentences recorded
+     */
+    public List<LineTemplate.Line> fluentFor(List<LineTemplate.Line> lines, int from, int to, String lead,
+            String... operators) {
+        java.util.Set<String> own = new java.util.HashSet<>();
+        java.util.Set<String> wanted = new java.util.LinkedHashSet<>();
+        for (LineTemplate.Line l : lines) {
+            own.add(l.text());
+            for (LineTemplate.Unit u : parts(l)) {
+                wanted.add(cell(u));
+            }
+        }
+        List<LineTemplate.Line> candidates = new ArrayList<>(candidates(from, to, lead, operators));
+        candidates.removeIf(l -> own.contains(l.text()));
+        return chooseAndRecord(candidates, wanted, "for " + lines.size() + " lines");
+    }
+
+    private List<LineTemplate.Line> candidates(int from, int to, String lead, String... operators) {
+        List<LineTemplate.Line> out = new ArrayList<>();
         for (String c : calculationsToRecord(from, to, operators)) {
-            candidates.add(MathReader.read(c, speller));
+            out.add(MathReader.read(c, speller));
             if (lead != null) {
                 String[] t = c.split(" ");
                 LineTemplate q = LineTemplate.parse(lead + " {a} " + speller.operator(t[1]) + " {b}?");
-                candidates.add(q.render(Map.of("a", Integer.parseInt(t[0]), "b", Integer.parseInt(t[2])), speller));
+                out.add(q.render(Map.of("a", Integer.parseInt(t[0]), "b", Integer.parseInt(t[2])), speller));
             }
         }
-        java.util.Set<String> wanted = new java.util.LinkedHashSet<>();
-        List<Piece> guides = new ArrayList<>();
-        for (LineTemplate.Line l : candidates) {
-            for (LineTemplate.Unit u : parts(l)) {
-                if (wanted.add(u.text() + "\u0000" + u.position())) {
-                    guides.add(new Piece(u.text().replaceAll("[\\s.?!,;:]+$", ""), u.position()));
-                }
-            }
-        }
+        return out;
+    }
+
+    private static String cell(LineTemplate.Unit u) {
+        return u.text().replaceAll("[\\s.?!,;:]+$", "") + "\u0000" + u.position();
+    }
+
+    private List<LineTemplate.Line> chooseAndRecord(List<LineTemplate.Line> candidates, java.util.Set<String> wanted,
+            String what) {
         // every piece said on its own first, as a guide for cutting (skips those recorded)
+        List<Piece> guides = new ArrayList<>();
+        for (String c : wanted) {
+            int z = c.indexOf('\u0000');
+            guides.add(new Piece(c.substring(0, z), c.substring(z + 1)));
+        }
         record(guides);
+        java.util.Set<String> left = new java.util.LinkedHashSet<>(wanted);
         List<LineTemplate.Line> chosen = new ArrayList<>();
-        while (!wanted.isEmpty()) {
+        while (!left.isEmpty()) {
             LineTemplate.Line best = null;
             int gain = 0;
             for (LineTemplate.Line l : candidates) {
                 int g = 0;
                 for (LineTemplate.Unit u : parts(l)) {
-                    if (wanted.contains(u.text() + "\u0000" + u.position())) {
+                    if (left.contains(cell(u))) {
                         g++;
                     }
                 }
@@ -806,14 +850,15 @@ public final class ClipMaker {
                 }
             }
             if (best == null) {
+                log.accept("  ! no sentence holds: " + left.stream().map(c -> c.replace('\u0000', ' ')).toList());
                 break;
             }
             chosen.add(best);
             for (LineTemplate.Unit u : parts(best)) {
-                wanted.remove(u.text() + "\u0000" + u.position());
+                left.remove(cell(u));
             }
         }
-        log.accept("fluent sentences for " + from + " to " + to + ": " + chosen.size());
+        log.accept("fluent sentences " + what + ": " + chosen.size());
         recordFluent(chosen);
         return chosen;
     }

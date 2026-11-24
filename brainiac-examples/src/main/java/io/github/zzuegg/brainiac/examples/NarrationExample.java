@@ -45,8 +45,9 @@ import java.util.stream.IntStream;
  * {@code --device name}, {@code --takes N}, {@code --temperature T}, {@code --quick} (smaller ranges),
  * {@code --whole-math [top]} (also record whole every calculation from 0 to top, 20 by default,
  * read out and asked; about 1,300 lines for 20, and a stopped run picks up where it left off),
- * {@code --parts [top]} (numbers up to top, 999 by default, built from parts such as
- * zweihundert|einund|fünfzig, cut from fluent sums), {@code --male} (design a calm male
+ * {@code --parts [top]} (numbers built from parts such as zweihundert|einund|fünfzig, cut from
+ * fluent sums: alone, just the parts of a few test lines with 21, 51, 100, 121 and 251; with
+ * top, every part up to top), {@code --male} (design a calm male
  * teacher's voice instead of the female narrator), {@code --calm} (a calmer female voice); give
  * each voice its own {@code --out} folder.
  * Writes {@code reference.wav}, {@code library-<lang>/} and {@code samples/} with a {@code report.md}.
@@ -160,9 +161,16 @@ public final class NarrationExample {
                 maker.referenceVoice(reference);
                 prepare(maker, sp, quick);
                 if (o.containsKey("parts")) {
-                    // bigger numbers built from parts (zweihundert|einund|fünfzig), cut from fluent sums
-                    partsTop = Integer.parseInt(o.get("parts").equals("true") ? "999" : o.get("parts"));
-                    maker.fluentMath(0, partsTop, de ? "Was ist" : "What is", "+", "-");
+                    // bigger numbers built from parts (zweihundert|einund|fünfzig), cut from fluent sums:
+                    // --parts alone records just what the test lines need, --parts N every part up to N
+                    String lead = de ? "Was ist" : "What is";
+                    if (o.get("parts").equals("true")) {
+                        partsTop = 300;
+                        maker.fluentFor(bigLines(sp), 0, partsTop, lead, "+", "-");
+                    } else {
+                        partsTop = Integer.parseInt(o.get("parts"));
+                        maker.fluentMath(0, partsTop, lead, "+", "-");
+                    }
                 }
                 if (o.containsKey("whole-math")) {
                     // every calculation up to the top, read out and asked, each as one fluent take
@@ -323,6 +331,19 @@ public final class NarrationExample {
     private record Case(String label, LineTemplate.Line line) {
     }
 
+    /** Lines with numbers built from parts: 21, 51, 100, 121, 251. */
+    private static List<LineTemplate.Line> bigLines(NumberSpeller sp) {
+        boolean de = sp.language().equals("de");
+        LineTemplate ask = LineTemplate.parse(de ? "Was ist {a} plus {b}?" : "What is {a} plus {b}?");
+        List<LineTemplate.Line> out = new ArrayList<>();
+        out.add(ask.render(Map.of("a", 251, "b", 21), sp));
+        out.add(ask.render(Map.of("a", 100, "b", 51), sp));
+        for (String e : new String[] {"21 + 30 = 51", "200 + 51 = 251", "143 - 22 = 121"}) {
+            out.add(MathReader.read(e, sp));
+        }
+        return out;
+    }
+
     private static void compare(ClipMaker maker, ClipLibrary lib, SpeechToText stt, NumberSpeller sp, Path dir,
             boolean quick) throws IOException {
         boolean de = sp.language().equals("de");
@@ -336,10 +357,9 @@ public final class NarrationExample {
         String[] sums = quick ? new String[] {"4 + 2 = 6", "11 - 5 = 6"} : new String[] {"6 + 7 = 13", "17 - 9 = 8",
             "4 × 3 = 12", "12 ÷ 4 = 3"};
         if (partsTop >= 300) {
-            cases.add(new Case("question", ask.render(Map.of("a", 251, "b", 21), sp)));
-            cases.add(new Case("question", ask.render(Map.of("a", 100, "b", 51), sp)));
-            sums = java.util.stream.Stream.concat(java.util.Arrays.stream(sums),
-                    java.util.stream.Stream.of("21 + 30 = 51", "200 + 51 = 251", "143 - 22 = 121")).toArray(String[]::new);
+            for (LineTemplate.Line l : bigLines(sp)) {
+                cases.add(new Case("big number", l));
+            }
         }
         for (String e : sums) {
             cases.add(new Case("calculation", MathReader.read(e, sp)));
