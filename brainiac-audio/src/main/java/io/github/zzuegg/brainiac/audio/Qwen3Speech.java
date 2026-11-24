@@ -464,6 +464,23 @@ public final class Qwen3Speech implements TextToSpeech {
         prepared.remove(id);
     }
 
+    /**
+     * The speaker encoder's embedding of a voice (Base models), the one cloning is
+     * conditioned on: two takes are in the same voice when their embeddings' cosine is high.
+     *
+     * @param audio speech, at any sample rate
+     * @return the embedding
+     * @throws IllegalStateException if the model has no speaker encoder
+     */
+    public float[] speakerEmbedding(Audio audio) {
+        if (speakerEncoder == null) {
+            throw new IllegalStateException("this model has no speaker encoder");
+        }
+        float[] samples = audio.sampleRate() == codec.sampleRate() ? audio.samples()
+                : Signal.resample(audio.samples(), audio.sampleRate(), codec.sampleRate());
+        return speakerEncoder.embed(samples);
+    }
+
     @Override
     public boolean followsInstructions() {
         // the 0.6B CustomVoice model ignores instructions, as the reference drops them

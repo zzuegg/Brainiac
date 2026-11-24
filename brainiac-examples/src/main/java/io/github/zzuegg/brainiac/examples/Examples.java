@@ -36,6 +36,13 @@ public final class Examples {
             case "chat" -> ChatExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "image" -> ImageExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             case "video" -> VideoExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
+            case "narration" -> {
+                try {
+                    NarrationExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
+                } catch (java.io.IOException e) {
+                    throw new java.io.UncheckedIOException(e);
+                }
+            }
             case "wanprobe" -> WanProbeExample.main(java.util.Arrays.copyOfRange(args, 1, args.length));
             default -> System.out.println("""
                     Usage: ./gradlew :brainiac-examples:run --args=<example>
@@ -55,6 +62,9 @@ public final class Examples {
                               [--prompt text] [--device vulkan] [--dtype f16] [--max N] [--temperature T]
                       image   generate images with Stable Diffusion: image <diffusers folder or .safetensors> <prompt>
                               [--size WxH] [--steps N] [--seed S] [--count N] [--negative text]
+                      narration  record a game narrator's numbers with Qwen3-TTS, compare splicing
+                              with whole lines: narration --base <Base folder> --whisper <folder>
+                              [--design <VoiceDesign folder>] [--out dir] [--language de|en] [--quick]
                       video   generate a short video with Wan: video <model folder> <prompt>
                               [--size WxH] [--frames N] [--steps N] [--seed S] [--avi]""");
         }
