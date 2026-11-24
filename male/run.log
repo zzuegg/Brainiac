@@ -1,0 +1,304 @@
+﻿start 2026-11-24T22:27:16.9423619+01:00
+Picked up JAVA_TOOL_OPTIONS: -Dbrainiac.vulkan.memory=10000
+Calculating task graph as no cached configuration is available for tasks: :brainiac-examples:run --args=narration --base D:\_Programming\Brainiac-models-large\Qwen3-TTS-12Hz-1.7B-Base --whisper D:\_Programming\Brainiac-models-large\whisper-large-v3 --design D:\_Programming\Brainiac-models-large\Qwen3-TTS-12Hz-1.7B-VoiceDesign --out D:\_Programming\Brainiac-models-large\narration-male --language de --takes 3 --male --parts
+> Task :build-logic:checkKotlinCompilerVersion
+> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
+> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
+> Task :build-logic:compilePluginsBlocks UP-TO-DATE
+> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
+> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
+
+> Task :build-logic:compileKotlin UP-TO-DATE
+Kotlin does not yet support 27 JDK target, falling back to Kotlin JVM_26 JVM target
+
+> Task :build-logic:compileJava NO-SOURCE
+> Task :build-logic:pluginDescriptors UP-TO-DATE
+> Task :build-logic:processResources UP-TO-DATE
+> Task :build-logic:classes UP-TO-DATE
+> Task :build-logic:jar UP-TO-DATE
+
+> Configure project :brainiac
+Kotlin does not yet support 27 JDK target, falling back to Kotlin JVM_26 JVM target
+
+> Task :brainiac-train:processResources NO-SOURCE
+> Task :brainiac-autograd:processResources NO-SOURCE
+> Task :brainiac-nn:processResources NO-SOURCE
+> Task :brainiac-evolve:processResources NO-SOURCE
+> Task :brainiac-data:processResources NO-SOURCE
+> Task :brainiac-llm:processResources NO-SOURCE
+> Task :brainiac-examples:processResources NO-SOURCE
+> Task :brainiac-diffusion:processResources NO-SOURCE
+> Task :brainiac-rl:processResources NO-SOURCE
+> Task :brainiac:processResources NO-SOURCE
+> Task :brainiac-tensor:processResources NO-SOURCE
+> Task :brainiac-audio:processResources UP-TO-DATE
+> Task :brainiac-io:processResources UP-TO-DATE
+> Task :brainiac-backend-cpu:processResources UP-TO-DATE
+> Task :brainiac-backend-hip:processResources UP-TO-DATE
+> Task :brainiac-backend-cuda:processResources UP-TO-DATE
+> Task :brainiac-tensor:compileJava UP-TO-DATE
+> Task :brainiac-tensor:classes UP-TO-DATE
+> Task :brainiac-backend-vulkan:processResources UP-TO-DATE
+> Task :brainiac-tensor:jar UP-TO-DATE
+> Task :brainiac-backend-cpu:compileJava UP-TO-DATE
+> Task :brainiac-backend-cuda:compileJava UP-TO-DATE
+> Task :brainiac-backend-cuda:classes UP-TO-DATE
+> Task :brainiac-data:compileJava UP-TO-DATE
+> Task :brainiac-backend-cpu:classes UP-TO-DATE
+> Task :brainiac-backend-vulkan:compileJava UP-TO-DATE
+> Task :brainiac-backend-hip:compileJava UP-TO-DATE
+> Task :brainiac-autograd:compileJava UP-TO-DATE
+> Task :brainiac-backend-vulkan:classes UP-TO-DATE
+> Task :brainiac-data:classes UP-TO-DATE
+> Task :brainiac-backend-hip:classes UP-TO-DATE
+> Task :brainiac-autograd:classes UP-TO-DATE
+> Task :brainiac-backend-cpu:jar UP-TO-DATE
+> Task :brainiac-backend-vulkan:jar UP-TO-DATE
+> Task :brainiac-autograd:jar UP-TO-DATE
+> Task :brainiac-backend-cuda:jar UP-TO-DATE
+> Task :brainiac-data:jar UP-TO-DATE
+> Task :brainiac-backend-hip:jar UP-TO-DATE
+> Task :brainiac-io:compileJava UP-TO-DATE
+> Task :brainiac-io:classes UP-TO-DATE
+> Task :brainiac-nn:compileJava UP-TO-DATE
+> Task :brainiac-nn:classes UP-TO-DATE
+> Task :brainiac-nn:jar UP-TO-DATE
+> Task :brainiac-io:jar UP-TO-DATE
+> Task :brainiac-llm:compileJava UP-TO-DATE
+> Task :brainiac-llm:classes UP-TO-DATE
+> Task :brainiac-diffusion:compileJava UP-TO-DATE
+> Task :brainiac-train:compileJava UP-TO-DATE
+> Task :brainiac-train:classes UP-TO-DATE
+> Task :brainiac-diffusion:classes UP-TO-DATE
+> Task :brainiac-llm:jar UP-TO-DATE
+> Task :brainiac-train:jar UP-TO-DATE
+> Task :brainiac-audio:compileJava UP-TO-DATE
+> Task :brainiac-diffusion:jar UP-TO-DATE
+> Task :brainiac-evolve:compileJava UP-TO-DATE
+> Task :brainiac-rl:compileJava UP-TO-DATE
+> Task :brainiac-audio:classes UP-TO-DATE
+> Task :brainiac-rl:classes UP-TO-DATE
+> Task :brainiac-evolve:classes UP-TO-DATE
+> Task :brainiac-rl:jar UP-TO-DATE
+> Task :brainiac-evolve:jar UP-TO-DATE
+> Task :brainiac-audio:jar UP-TO-DATE
+> Task :brainiac:compileJava UP-TO-DATE
+> Task :brainiac:classes UP-TO-DATE
+> Task :brainiac:jar UP-TO-DATE
+> Task :brainiac-examples:compileJava UP-TO-DATE
+> Task :brainiac-examples:classes UP-TO-DATE
+> Task :brainiac-examples:jar UP-TO-DATE
+
+> Task :brainiac-examples:run
+Picked up JAVA_TOOL_OPTIONS: -Dbrainiac.vulkan.memory=10000
+WARNING: Using incubator modules: jdk.incubator.vector
+device vulkan (AMD Radeon RX 9070 XT), BFLOAT16; 3 takes at temperature 0.6
+designing the voice: Eine warme, ruhige M�nnerstimme, Ende drei�ig, freundlich und geduldig wie ein netter Lehrer, klar und ein wenig langsamer als normal, f�r ein Lernspiel f�r Kinder.
+  take 0: 6.3 s, match 1.00
+  take 1: 6.6 s, match 1.00
+  take 2: 5.2 s, match 1.00
+  take 3: 6.7 s, match 1.00
+reference voice D:\_Programming\Brainiac-models-large\narration-male\reference.wav (6.7 s)
+  Plus, minus, mal, geteilt durch, null.                       asr 1.00 voice 0.99 
+  Ist, null, eins, zwei, eins.                                 asr 1.00 voice 0.98 
+  Drei, vier, f�nf, sechs, zwei.                               asr 1.00 voice 0.99 
+  Sieben, acht, neun, zehn, drei.                              asr 1.00 voice 0.99 
+  Elf, zw�lf, dreizehn, vierzehn, vier.                        asr 1.00 voice 0.99 
+  F�nfzehn, sechzehn, siebzehn, achtzehn, f�nf.                asr 1.00 voice 0.99 
+  Neunzehn, zwanzig, sechs.                                    asr 1.00 voice 0.99 
+  Sieben.                                                      asr 1.00 voice 0.96 
+  Acht.                                                        asr 1.00 voice 0.95 
+  Neun.                                                        asr 1.00 voice 0.95 
+  Zehn.                                                        asr 1.00 voice 0.95 
+  Elf.                                                         asr 1.00 voice 0.95 
+  Zw�lf.                                                       asr 1.00 voice 0.95 
+  Dreizehn.                                                    asr 1.00 voice 0.97 
+  Vierzehn.                                                    asr 1.00 voice 0.98 
+  F�nfzehn.                                                    asr 1.00 voice 0.97 
+  Sechzehn.                                                    asr 1.00 voice 0.97 
+  Siebzehn.                                                    asr 1.00 voice 0.97 
+  Achtzehn.                                                    asr 1.00 voice 0.97 
+  Neunzehn.                                                    asr 1.00 voice 0.97 
+  Zwanzig.                                                     asr 1.00 voice 0.97 
+  Null?                                                        asr 1.00 voice 0.96 
+  Eins?                                                        asr 1.00 voice 0.95 
+  Zwei?                                                        asr 1.00 voice 0.97 
+  Drei?                                                        asr 1.00 voice 0.96 
+  Vier?                                                        asr 1.00 voice 0.95 
+  F�nf?                                                        asr 1.00 voice 0.95 
+  Sechs?                                                       asr 1.00 voice 0.95 
+  Sieben?                                                      asr 1.00 voice 0.96 
+  Acht?                                                        asr 1.00 voice 0.95 
+  Neun?                                                        asr 1.00 voice 0.95 
+  Zehn?                                                        asr 1.00 voice 0.97 
+  Elf?                                                         asr 1.00 voice 0.95 
+  Zw�lf?                                                       asr 1.00 voice 0.97 
+  Dreizehn?                                                    asr 1.00 voice 0.98 
+  Vierzehn?                                                    asr 1.00 voice 0.97 
+  F�nfzehn?                                                    asr 1.00 voice 0.98 
+  Sechzehn?                                                    asr 1.00 voice 0.98 
+  Siebzehn?                                                    asr 1.00 voice 0.97 
+  Achtzehn?                                                    asr 1.00 voice 0.97 
+  Neunzehn?                                                    asr 1.00 voice 0.98 
+  Zwanzig?                                                     asr 1.00 voice 0.98 
+fluent sentences for 0 to 20: 46
+  Was ist, Was ist.                                            asr 1.00 voice 0.98 
+  null plus null ist null                                      asr 1.00 voice 0.98 
+  Was ist null plus null?                                      asr 1.00 voice 0.98 
+  zwei minus eins ist eins                                     asr 1.00 voice 0.97 
+  eins mal zwei ist zwei                                       asr 1.00 voice 0.99 
+  neun geteilt durch drei ist drei                             asr 1.00 voice 0.98 
+  drei plus vier ist sieben                                    asr 1.00 voice 0.98 
+  vier plus f�nf ist neun                                      asr 1.00 voice 0.98 
+  f�nf plus sechs ist elf                                      asr 1.00 voice 0.98 
+  sechs plus sieben ist dreizehn                               asr 1.00 voice 0.98 
+  sieben plus acht ist f�nfzehn                                asr 1.00 voice 0.99 
+  acht plus neun ist siebzehn                                  asr 1.00 voice 0.99 
+  zehn plus zehn ist zwanzig                                   asr 1.00 voice 0.98 
+  Was ist eins minus eins?                                     asr 1.00 voice 0.98 
+  f�nfzehn minus elf ist vier                                  asr 1.00 voice 0.98 
+  siebzehn minus zw�lf ist f�nf                                asr 1.00 voice 0.99 
+  neunzehn minus dreizehn ist sechs                            asr 1.00 voice 0.98 
+  Was ist zwei mal zwei?                                       asr 1.00 voice 0.98 
+  Was ist drei geteilt durch drei?                             asr 1.00 voice 0.98 
+  null plus vierzehn ist vierzehn                              asr 1.00 voice 0.99 
+  null plus sechzehn ist sechzehn                              asr 1.00 voice 0.99 
+  null plus achtzehn ist achtzehn                              asr 1.00 voice 0.99 
+  null plus neunzehn ist neunzehn                              asr 1.00 voice 0.98 
+  Was ist vier plus vier?                                      asr 1.00 voice 0.98 
+  Was ist f�nf plus f�nf?                                      asr 1.00 voice 0.98 
+  Was ist sechs plus sechs?                                    asr 1.00 voice 0.98 
+  Was ist sieben plus sieben?                                  asr 1.00 voice 0.98 
+  Was ist acht plus acht?                                      asr 1.00 voice 0.97 
+  Was ist neun plus neun?                                      asr 1.00 voice 0.98 
+  Was ist zehn plus zehn?                                      asr 1.00 voice 0.98 
+  elf plus eins ist zw�lf                                      asr 1.00 voice 0.98 
+  Was ist elf minus elf?                                       asr 1.00 voice 0.98 
+  zw�lf minus zwei ist zehn                                    asr 1.00 voice 0.98 
+  Was ist zw�lf minus zw�lf?                                   asr 1.00 voice 0.97 
+  dreizehn minus f�nf ist acht                                 asr 1.00 voice 0.98 
+  Was ist dreizehn minus dreizehn?                             asr 1.00 voice 0.99 
+  Was ist vierzehn minus vierzehn?                             asr 1.00 voice 0.98 
+  Was ist f�nfzehn minus f�nfzehn?                             asr 1.00 voice 0.98 
+  sechzehn minus f�nfzehn ist eins                             asr 1.00 voice 0.99 
+  Was ist sechzehn minus sechzehn?                             asr 1.00 voice 0.98 
+  Was ist siebzehn minus siebzehn?                             asr 1.00 voice 0.98 
+  achtzehn minus siebzehn ist eins                             asr 1.00 voice 0.98 
+  Was ist achtzehn minus achtzehn?                             asr 1.00 voice 0.98 
+  Was ist neunzehn minus neunzehn?                             asr 1.00 voice 0.98 
+  zwanzig minus zwanzig ist null                               asr 1.00 voice 0.99 
+  Was ist zwanzig minus zwanzig?                               asr 1.00 voice 0.97 
+  vierzehn plus null ist vierzehn                              asr 1.00 voice 0.99 
+Was ist {a} plus {b}?: 100 lines
+{n0} plus {n1} ist {n2}: 1900 lines
+Du bist auf dem {n:ordinal:en} Platz!: 8 lines
+  Du bist auf dem ersten Platz!                                asr 1.00 voice 0.98 
+  Du bist auf dem zweiten Platz!                               asr 1.00 voice 0.98 
+  Du bist auf dem dritten Platz!                               asr 1.00 voice 0.98 
+  Du bist auf dem vierten Platz!                               asr 1.00 voice 0.98 
+  Du bist auf dem f�nften Platz!                               asr 1.00 voice 0.98 
+  Du bist auf dem sechsten Platz!                              asr 1.00 voice 0.98 
+  Du bist auf dem siebten Platz!                               asr 1.00 voice 0.98 
+  Du bist auf dem achten Platz!                                asr 1.00 voice 0.97 
+Noch {n:cardinal:eine} {n|Runde|Runden}!: 5 lines
+  Noch eine Runde!                                             asr 1.00 voice 0.96 
+  Noch zwei Runden!                                            asr 1.00 voice 0.97 
+  Noch drei Runden!                                            asr 1.00 voice 0.97 
+  Noch vier Runden!                                            asr 1.00 voice 0.97 
+  Noch f�nf Runden!                                            asr 1.00 voice 0.97 
+fluent sentences for 5 lines: 5
+  Zweihundert, zweiund, vierzig, einund, f�nfzig.              asr 1.00 voice 0.99 
+  Hundert, f�nfund, drei�ig, sechsund, f�nfzig?                asr 1.00 voice 0.99 
+  F�nfzig, neunund, dreiund, dreiund.                          asr 1.00 voice 0.99 
+  zweihundertzweiundvierzig minus einundzwanzig ist zweihunderteinundzwanzig asr 1.00 voice 0.98 
+  hunderteinundzwanzig plus f�nfunddrei�ig ist hundertsechsundf�nfzig asr 1.00 voice 0.99 
+  Was ist hunderteinundf�nfzig plus neunundf�nfzig?            asr 1.00 voice 0.98 
+  Was ist zweihundertf�nfundf�nfzig minus hunderteinundzwanzig? asr 1.00 voice 0.98 
+  zweihundertdreiundf�nfzig minus zweihundertzweiundf�nfzig ist eins asr 1.00 voice 0.99 
+library ready: 239 clips (1285 s so far)
+  Was ist                                                      asr 1.00 voice 0.96 
+  sieben                                                       asr 1.00 voice 0.96 
+  plus                                                         asr 1.00 voice 0.97 
+  acht?                                                        asr 1.00 voice 0.94 
+  Was ist sieben plus acht?                                    asr 1.00 voice 0.98 
+sample 01: Was ist sieben plus acht?
+  Was ist                                                      asr 1.00 voice 0.96 
+  neun                                                         asr 1.00 voice 0.96 
+  plus                                                         asr 1.00 voice 0.97 
+  vier?                                                        asr 1.00 voice 0.96 
+  Was ist neun plus vier?                                      asr 1.00 voice 0.99 
+sample 02: Was ist neun plus vier?
+  Was ist                                                      asr 1.00 voice 0.96 
+  sechs                                                        asr 1.00 voice 0.96 
+  plus                                                         asr 1.00 voice 0.97 
+  zehn?                                                        asr 1.00 voice 0.96 
+  Was ist sechs plus zehn?                                     asr 1.00 voice 0.98 
+sample 03: Was ist sechs plus zehn?
+  Was ist                                                      asr 1.00 voice 0.96 
+  zweihunderteinundf�nfzig                                     asr 1.00 voice 0.99 
+  plus                                                         asr 1.00 voice 0.97 
+  einundzwanzig?                                               asr 1.00 voice 0.97 
+  Was ist zweihunderteinundf�nfzig plus einundzwanzig?         asr 1.00 voice 0.99 
+sample 04: Was ist zweihunderteinundf�nfzig plus einundzwanzig?
+  Was ist                                                      asr 1.00 voice 0.96 
+  hundert                                                      asr 1.00 voice 0.97 
+  plus                                                         asr 1.00 voice 0.97 
+  einundf�nfzig?                                               asr 1.00 voice 0.97 
+  Was ist hundert plus einundf�nfzig?                          asr 1.00 voice 0.99 
+sample 05: Was ist hundert plus einundf�nfzig?
+  einundzwanzig                                                asr 1.00 voice 0.97 
+  plus                                                         asr 1.00 voice 0.97 
+  drei�ig                                                      asr 1.00 voice 0.95 
+  ist                                                          asr 1.00 voice 0.94 
+  einundf�nfzig                                                asr 1.00 voice 0.98 
+  einundzwanzig plus drei�ig ist einundf�nfzig                 asr 1.00 voice 0.98 
+sample 06: einundzwanzig plus drei�ig ist einundf�nfzig
+  zweihundert                                                  asr 1.00 voice 0.98 
+  plus                                                         asr 1.00 voice 0.97 
+  einundf�nfzig                                                asr 1.00 voice 0.98 
+  ist                                                          asr 1.00 voice 0.94 
+  zweihunderteinundf�nfzig                                     asr 1.00 voice 0.99 
+  zweihundert plus einundf�nfzig ist zweihunderteinundf�nfzig  asr 1.00 voice 0.99 
+sample 07: zweihundert plus einundf�nfzig ist zweihunderteinundf�nfzig
+  hundertdreiundvierzig                                        asr 1.00 voice 0.99 
+  minus                                                        asr 1.00 voice 0.96 
+  zweiundzwanzig                                               asr 1.00 voice 0.97 
+  ist                                                          asr 1.00 voice 0.94 
+  hunderteinundzwanzig                                         asr 1.00 voice 0.98 
+  hundertdreiundvierzig minus zweiundzwanzig ist hunderteinundzwanzig asr 1.00 voice 0.98 
+sample 08: hundertdreiundvierzig minus zweiundzwanzig ist hunderteinundzwanzig
+  sechs                                                        asr 1.00 voice 0.96 
+  plus                                                         asr 1.00 voice 0.97 
+  sieben                                                       asr 1.00 voice 0.96 
+  ist                                                          asr 1.00 voice 0.94 
+  dreizehn                                                     asr 1.00 voice 0.98 
+  sechs plus sieben ist dreizehn                               asr 1.00 voice 0.98 
+sample 09: sechs plus sieben ist dreizehn
+  siebzehn                                                     asr 1.00 voice 0.97 
+  minus                                                        asr 1.00 voice 0.96 
+  neun                                                         asr 1.00 voice 0.96 
+  ist                                                          asr 1.00 voice 0.94 
+  acht                                                         asr 1.00 voice 0.94 
+  siebzehn minus neun ist acht                                 asr 1.00 voice 0.98 
+sample 10: siebzehn minus neun ist acht
+  vier                                                         asr 1.00 voice 0.95 
+  mal                                                          asr 1.00 voice 0.94 
+  drei                                                         asr 1.00 voice 0.96 
+  ist                                                          asr 1.00 voice 0.94 
+  zw�lf                                                        asr 1.00 voice 0.97 
+  vier mal drei ist zw�lf                                      asr 1.00 voice 0.98 
+sample 11: vier mal drei ist zw�lf
+  zw�lf                                                        asr 1.00 voice 0.97 
+  geteilt durch                                                asr 1.00 voice 0.97 
+  vier                                                         asr 1.00 voice 0.95 
+  ist                                                          asr 1.00 voice 0.94 
+  drei                                                         asr 1.00 voice 0.96 
+  zw�lf geteilt durch vier ist drei                            asr 1.00 voice 0.98 
+sample 12: zw�lf geteilt durch vier ist drei
+done in 2055 s
+
+BUILD SUCCESSFUL in 34m 24s
+51 actionable tasks: 2 executed, 49 up-to-date
+Configuration cache entry stored.
+exit 0 elapsed 00:34:24.7204380 end 2026-11-24T23:01:41.6627789+01:00
