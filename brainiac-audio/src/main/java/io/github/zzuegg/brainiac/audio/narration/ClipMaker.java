@@ -163,16 +163,12 @@ public final class ClipMaker {
         List<Take> out = new ArrayList<>();
         String want = AudioTools.normalize(text, speller);
         for (int k = 0; k < settings.takes(); k++) {
-            long seed = settings.options().seed() + k;
-            Audio a = tts.synthesize(text, settings.options().seed(seed), null);
-            a = Loudness.normalize(a, settings.targetLufs(), -1);
-            String heard = hear(a.samples(), a.sampleRate());
-            double asr = AudioTools.similarity(want, AudioTools.normalize(heard, speller));
-            float[] print = embedder.embed(a);
-            if (referencePrint == null) {
-                referencePrint = print;
-            }
-            out.add(new Take(a, heard, asr, AudioTools.cosine(print, referencePrint), seed));
+            out.add(take(text, want, settings.options().seed() + k));
+        }
+        // no take heard right: try up to two more seeds before giving up
+        for (int k = settings.takes(); k < settings.takes() + 2
+                && out.stream().noneMatch(t -> t.asr() >= settings.minAsr()); k++) {
+            out.add(take(text, want, settings.options().seed() + k));
         }
         double[] lengths = out.stream().mapToDouble(t -> t.audio().seconds()).sorted().toArray();
         double median = lengths[lengths.length / 2];
@@ -184,6 +180,18 @@ public final class ClipMaker {
         log.accept(String.format("  %-60s asr %.2f voice %.2f %s", text, best.asr(), best.voice(),
                 best.asr() < minAsr ? "(no take matched: heard \"" + best.heard() + "\")" : ""));
         return out;
+    }
+
+    private Take take(String text, String want, long seed) {
+        Audio a = tts.synthesize(text, settings.options().seed(seed), null);
+        a = Loudness.normalize(a, settings.targetLufs(), -1);
+        String heard = hear(a.samples(), a.sampleRate());
+        double asr = AudioTools.similarity(want, AudioTools.normalize(heard, speller));
+        float[] print = embedder.embed(a);
+        if (referencePrint == null) {
+            referencePrint = print;
+        }
+        return new Take(a, heard, asr, AudioTools.cosine(print, referencePrint), seed);
     }
 
     private String hear(float[] x, int rate) {
@@ -477,6 +485,59 @@ public final class ClipMaker {
         }
         record(wanted);
         return Narrator.Mode.SPLICED;
+    }
+
+    /**
+     * Records many lines whole, skipping those already recorded and saving the library every 25
+     * lines, so a long run can be stopped and started again where it left off.
+     *
+     * @param lines the lines
+     * @return how many were newly recorded
+     */
+    public int fullLines(List<LineTemplate.Line> lines) {
+        int done = 0;
+        int i = 0;
+        long start = System.nanoTime();
+        for (LineTemplate.Line line : lines) {
+            i++;
+            if (library.full(line.text()) != null) {
+                continue;
+            }
+            full(line);
+            done++;
+            if (done % 25 == 0) {
+                library.save();
+                double perLine = (System.nanoTime() - start) / 1e9 / done;
+                log.accept(String.format("  %d/%d lines, %.1f s per line", i, lines.size(), perLine));
+            }
+        }
+        library.save();
+        return done;
+    }
+
+    /**
+     * Records whole every calculation in a range ({@link MathReader#calculations}), read out
+     * ("sieben plus acht ist fünfzehn") and, with a question template, asked
+     * ("Was ist sieben plus acht?"), so a maths game plays each as one fluent take.
+     *
+     * @param from the smallest number
+     * @param to the largest number
+     * @param question a template with an {@code {e:math}} hole, such as
+     *     {@code "Was ist {e:math}?"}, or {@code null} for no questions
+     * @param operators any of {@code "+", "-", "×", "÷"}
+     * @return the lines, recorded or found in the library
+     */
+    public List<LineTemplate.Line> fullMath(int from, int to, LineTemplate question, String... operators) {
+        List<LineTemplate.Line> lines = new ArrayList<>();
+        for (String c : MathReader.calculations(from, to, operators)) {
+            lines.add(MathReader.read(c, speller));
+            if (question != null) {
+                lines.add(question.render(Map.of("e", c.substring(0, c.indexOf('=')).trim()), speller));
+            }
+        }
+        log.accept("whole calculations " + from + " to " + to + ": " + lines.size() + " lines");
+        fullLines(lines);
+        return lines;
     }
 
     /**

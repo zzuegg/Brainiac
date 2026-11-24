@@ -42,7 +42,9 @@ import java.util.stream.IntStream;
  * <p>The voice is designed once from a description with the VoiceDesign model (or given with
  * {@code --reference file.wav --reference-text "..."}), then every line is cloned from that one
  * clip by the Base model at a low temperature. Options: {@code --language de|en},
- * {@code --device name}, {@code --takes N}, {@code --temperature T}, {@code --quick} (smaller ranges).
+ * {@code --device name}, {@code --takes N}, {@code --temperature T}, {@code --quick} (smaller ranges),
+ * {@code --whole-math [top]} (also record whole every calculation from 0 to top, 20 by default,
+ * read out and asked; about 1,300 lines for 20, and a stopped run picks up where it left off).
  * Writes {@code reference.wav}, {@code library-<lang>/} and {@code samples/} with a {@code report.md}.
  */
 public final class NarrationExample {
@@ -76,7 +78,8 @@ public final class NarrationExample {
         if (!o.containsKey("base") || !o.containsKey("whisper")) {
             System.out.println("Usage: narration --base <Qwen3-TTS Base folder> --whisper <whisper folder>"
                     + " [--design <Qwen3-TTS VoiceDesign folder> | --reference ref.wav --reference-text text]"
-                    + " [--out dir] [--language de|en] [--device name] [--takes N] [--temperature T] [--quick]");
+                    + " [--out dir] [--language de|en] [--device name] [--takes N] [--temperature T] [--quick]"
+                    + " [--whole-math [top]]");
             return;
         }
         NumberSpeller sp = NumberSpeller.of(o.getOrDefault("language", "de"));
@@ -130,6 +133,12 @@ public final class NarrationExample {
                         embedder, System.out::println);
                 maker.referenceVoice(reference);
                 prepare(maker, sp, quick);
+                if (o.containsKey("whole-math")) {
+                    // every calculation up to the top, read out and asked, each as one fluent take
+                    int top = Integer.parseInt(o.get("whole-math").equals("true") ? "20" : o.get("whole-math"));
+                    maker.fullMath(0, top, LineTemplate.parse(de ? "Was ist {e:math}?" : "What is {e:math}?"),
+                            "+", "-", "×", "÷");
+                }
                 System.out.printf("library ready: %d clips (%.0f s so far)%n", lib.clips().size(),
                         (System.nanoTime() - start) / 1e9);
 

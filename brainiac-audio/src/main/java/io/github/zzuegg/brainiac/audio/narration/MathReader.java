@@ -30,6 +30,36 @@ public final class MathReader {
     }
 
     /**
+     * Every calculation with whole numbers in a range whose result is in the range too, such as
+     * {@code "7 + 8 = 15"}, {@code "12 ÷ 4 = 3"}: the lines a maths game can ask about.
+     *
+     * @param from the smallest number
+     * @param to the largest number
+     * @param operators any of {@code "+", "-", "×", "÷"}
+     * @return the calculations, in order of operator, then first and second number
+     */
+    public static List<String> calculations(int from, int to, String... operators) {
+        List<String> out = new ArrayList<>();
+        for (String op : operators) {
+            for (int a = from; a <= to; a++) {
+                for (int b = from; b <= to; b++) {
+                    Integer r = switch (op) {
+                        case "+" -> a + b;
+                        case "-" -> a - b;
+                        case "×", "*" -> a * b;
+                        case "÷", "/" -> b != 0 && a % b == 0 ? a / b : null;
+                        default -> throw new IllegalArgumentException("not an operator: " + op);
+                    };
+                    if (r != null && r >= from && r <= to) {
+                        out.add(a + " " + op + " " + b + " = " + r);
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
      * Spells an expression.
      *
      * @param expression such as {@code "12 + 7 = 19"}

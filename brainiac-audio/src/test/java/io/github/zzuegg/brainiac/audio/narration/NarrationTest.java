@@ -119,6 +119,24 @@ class NarrationTest {
     }
 
     @Test
+    void recordsEveryCalculationWhole(@TempDir Path dir) {
+        assertEquals(655, MathReader.calculations(0, 20, "+", "-", "×", "÷").size());
+        assertEquals(List.of("6 ÷ 1 = 6", "6 ÷ 2 = 3", "6 ÷ 3 = 2", "6 ÷ 6 = 1"),
+                MathReader.calculations(1, 6, "÷").stream().filter(c -> c.startsWith("6 ")).toList());
+        ClipLibrary lib = ClipLibrary.open(dir, "de");
+        ToneSpeech tts = new ToneSpeech();
+        ClipMaker maker = new ClipMaker(tts, new ToneHearing(tts), lib,
+                new ClipMaker.Settings(SpeechOptions.defaults(), 1, -16, 0.8, 5), null, null);
+        List<LineTemplate.Line> lines = maker.fullMath(1, 4, LineTemplate.parse("Was ist {e:math}?"), "+");
+        assertEquals(12, lines.size());
+        assertEquals("Was ist zwei plus eins?", lines.get(7).text());
+        assertEquals(0, maker.fullLines(lines));   // all recorded already
+        Narrator n = Narrator.open(dir);
+        assertEquals(Narrator.Mode.FULL, n.sayMath("2 + 1 = 3").mode());
+        assertEquals(Narrator.Mode.FULL, n.say("Was ist {e:math}?", Map.of("e", "2 + 1")).mode());
+    }
+
+    @Test
     void stretchKeepsPitch() {
         int rate = 24000;
         float[] x = new float[rate];
