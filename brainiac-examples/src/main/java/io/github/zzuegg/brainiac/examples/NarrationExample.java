@@ -47,7 +47,8 @@ import java.util.stream.IntStream;
  * read out and asked; about 1,300 lines for 20, and a stopped run picks up where it left off),
  * {@code --parts [top]} (numbers up to top, 999 by default, built from parts such as
  * zweihundert|einund|fünfzig, cut from fluent sums), {@code --male} (design a calm male
- * teacher's voice instead of the female narrator; use another {@code --out} folder).
+ * teacher's voice instead of the female narrator), {@code --calm} (a calmer female voice); give
+ * each voice its own {@code --out} folder.
  * Writes {@code reference.wav}, {@code library-<lang>/} and {@code samples/} with a {@code report.md}.
  */
 public final class NarrationExample {
@@ -66,6 +67,12 @@ public final class NarrationExample {
             + " zusammen, und am Ende bekommst du einen goldenen Stern.";
     private static final String REF_EN = "Hello! I'll be your guide today. We'll count, add and play together,"
             + " and at the end you'll get a golden star.";
+    private static final String CALM_DE = "Eine warme, sanfte und sehr ruhige Frauenstimme, Mitte dreißig, geduldig"
+            + " und freundlich wie eine liebe Lehrerin, entspannt und gleichmäßig, ein wenig langsamer als normal,"
+            + " für ein Lernspiel für Kinder.";
+    private static final String CALM_EN = "A warm, gentle and very calm female voice in her mid thirties, patient and"
+            + " friendly like a kind teacher, relaxed and even, a little slower than normal, for a learning game"
+            + " for children.";
     private static final String MALE_DE = "Eine warme, ruhige Männerstimme, Ende dreißig, freundlich und geduldig"
             + " wie ein netter Lehrer, klar und ein wenig langsamer als normal, für ein Lernspiel für Kinder.";
     private static final String MALE_EN = "A warm, calm male voice in his late thirties, friendly and patient like a"
@@ -91,7 +98,7 @@ public final class NarrationExample {
             System.out.println("Usage: narration --base <Qwen3-TTS Base folder> --whisper <whisper folder>"
                     + " [--design <Qwen3-TTS VoiceDesign folder> | --reference ref.wav --reference-text text]"
                     + " [--out dir] [--language de|en] [--device name] [--takes N] [--temperature T] [--quick]"
-                    + " [--whole-math [top]] [--parts [top]] [--male]");
+                    + " [--whole-math [top]] [--parts [top]] [--male | --calm]");
             return;
         }
         NumberSpeller sp = NumberSpeller.of(o.getOrDefault("language", "de"));
@@ -123,7 +130,8 @@ public final class NarrationExample {
                     throw new IllegalArgumentException("give --design <VoiceDesign folder> or --reference <wav>");
                 }
                 design(Path.of(o.get("design")), device, ttsType, stt, sp, o.getOrDefault("voice", male
-                        ? (de ? MALE_DE : MALE_EN) : de ? VOICE_DE : VOICE_EN), refText, refFile);
+                        ? (de ? MALE_DE : MALE_EN) : o.containsKey("calm") ? (de ? CALM_DE : CALM_EN)
+                        : de ? VOICE_DE : VOICE_EN), refText, refFile);
             }
             Audio reference = Wav.read(refFile);
             System.out.printf("reference voice %s (%.1f s)%n", refFile, reference.seconds());
