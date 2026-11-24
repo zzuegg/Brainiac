@@ -48,19 +48,24 @@ public final class Narrator {
      *     match the pace of the library's whole lines ({@link ClipLibrary#pieceSlowdown()})
      * @param targetLufs the loudness of every line
      * @param preferFull whether a line recorded whole is played instead of putting it together
+     * @param melody whether pieces are bent to one sentence melody (words said alone rise or
+     *     fall each on their own, a sentence starts high and falls slowly to its last word),
+     *     with literal words such as operators said a little lighter
      */
-    public record Settings(double gapSeconds, double speed, double targetLufs, boolean preferFull) {
+    public record Settings(double gapSeconds, double speed, double targetLufs, boolean preferFull,
+            boolean melody) {
 
         /** The speed when the library has no whole lines to measure the pace of. */
         public static final double DEFAULT_SPEED = 1.2;
 
         /**
-         * The defaults: 60 ms gaps, the pace of whole lines, -16 LUFS, whole lines first.
+         * The defaults: 30 ms gaps, the pace of whole lines, -16 LUFS, whole lines first, one
+         * sentence melody.
          *
          * @return the settings
          */
         public static Settings defaults() {
-            return new Settings(0.06, 0, -16, true);
+            return new Settings(0.03, 0, -16, true, true);
         }
     }
 
@@ -68,6 +73,18 @@ public final class Narrator {
     private final NumberSpeller speller;
     private final Settings settings;
     private double speed = Double.NaN;
+    private double voiceHz = Double.NaN;
+
+    /** Where a sentence's melody starts and where it has fallen to before its last word, in semitones. */
+    static final double MELODY_TOP = 2.5;
+    static final double MELODY_LOW = -1.5;
+    /** How much of a word's own pitch movement is kept, once its rise or fall is taken out. */
+    static final double ACCENT = 0.5;
+    /** The most a piece's pitch is moved, in semitones. */
+    static final double MAX_SHIFT = 6;
+    /** Literal words (operators, "was ist") are said lighter: quieter and quicker. */
+    static final double LIGHT_GAIN = 0.75;
+    static final double LIGHT_SPEED = 1.08;
 
     /**
      * A narrator for a library.
@@ -173,13 +190,36 @@ public final class Narrator {
         int rate = library.audio(used.get(0)).sampleRate();
         int gap = (int) (settings.gapSeconds() * rate);
         double tempo = speed();
+        List<LineTemplate.Unit> units = line.units();
+        int count = used.size();
+        float[][] raw = new float[count][];
+        double[] speeds = new double[count];
+        double total0 = 0;
+        for (int i = 0; i < count; i++) {
+            raw[i] = AudioTools.trim(library.audio(used.get(i)).resample(rate).samples(), rate, 0.01);
+            speeds[i] = tempo * (light(units.get(i), count) ? LIGHT_SPEED : 1);
+            total0 += raw[i].length / speeds[i] + gap;
+        }
+        double lineSeconds = Math.max(1e-3, (total0 - gap) / rate);
+        double ref = settings.melody() ? voiceHz() : Double.NaN;
         List<float[]> parts = new ArrayList<>();
         int total = 0;
-        for (ClipLibrary.Clip c : used) {
-            float[] p = AudioTools.trim(library.audio(c).resample(rate).samples(), rate, 0.01);
-            p = AudioTools.stretch(p, rate, tempo);
+        double t = 0;
+        for (int i = 0; i < count; i++) {
+            double[] ratio = Double.isNaN(ref) ? null
+                    : melody(raw[i], rate, ref, t / lineSeconds, (t + raw[i].length / speeds[i] / rate) / lineSeconds,
+                            i == count - 1);
+            float[] p = ratio == null ? AudioTools.stretch(raw[i], rate, speeds[i])
+                    : Prosody.reshape(raw[i], rate, speeds[i], ratio);
+            if (light(units.get(i), count)) {
+                for (int k = 0; k < p.length; k++) {
+                    p[k] *= (float) LIGHT_GAIN;
+                }
+            }
+            AudioTools.fade(p, rate, 0.008, 0.008);
             parts.add(p);
             total += p.length + gap;
+            t += (p.length + gap) / (double) rate;
         }
         float[] x = new float[total];
         int at = 0;
@@ -190,6 +230,109 @@ public final class Narrator {
         x = java.util.Arrays.copyOf(x, Math.max(0, at - gap));
         Audio a = Loudness.normalize(new Audio(x, rate), settings.targetLufs(), -1);
         return new Spoken(line.text(), a, Mode.SPLICED, used);
+    }
+
+    /**
+     * The pitch factors that bend a piece to the sentence melody: inside the line its own rise
+     * or fall is taken out and it follows the line's slow fall, keeping part of its own
+     * movement; the last piece keeps its ending (falling, or rising for a question) and is
+     * moved to start where the line has fallen to.
+     *
+     * @param x the piece
+     * @param rate the sample rate
+     * @param refHz the voice's middle pitch
+     * @param from where the piece starts in the line, 0 to 1
+     * @param to where it ends
+     * @param last whether it ends the line
+     * @return a factor per 10 ms frame, or {@code null} to leave it as it is
+     */
+    static double[] melody(float[] x, int rate, double refHz, double from, double to, boolean last) {
+        double[] hz = Prosody.pitch(x, rate);
+        double[] c = Prosody.contour(hz, refHz);
+        if (c == null) {
+            return null;
+        }
+        int n = c.length;
+        double[] want = new double[n];
+        if (last) {
+            double sum = 0;
+            int k = 0;
+            for (int i = 0; i < n && k < 5; i++) {
+                if (hz[i] > 0) {
+                    sum += c[i];
+                    k++;
+                }
+            }
+            double start = sum / k;
+            double shift = clamp(MELODY_TOP + (MELODY_LOW - MELODY_TOP) * from - start);
+            for (int i = 0; i < n; i++) {
+                want[i] = c[i] + shift;
+            }
+        } else {
+            // the piece's own rise or fall: a straight line through its voiced frames
+            double sx = 0;
+            double sy = 0;
+            double sxx = 0;
+            double sxy = 0;
+            int m = 0;
+            for (int i = 0; i < n; i++) {
+                if (hz[i] > 0) {
+                    sx += i;
+                    sy += c[i];
+                    sxx += (double) i * i;
+                    sxy += i * c[i];
+                    m++;
+                }
+            }
+            double den = m * sxx - sx * sx;
+            double slope = m > 1 && den != 0 ? (m * sxy - sx * sy) / den : 0;
+            double icpt = m > 0 ? (sy - slope * sx) / m : 0;
+            for (int i = 0; i < n; i++) {
+                double pos = from + (to - from) * i / Math.max(1, n - 1);
+                double line = MELODY_TOP + (MELODY_LOW - MELODY_TOP) * pos;
+                want[i] = line + ACCENT * (c[i] - (icpt + slope * i));
+            }
+        }
+        double[] ratio = new double[n];
+        for (int i = 0; i < n; i++) {
+            ratio[i] = Math.pow(2, clamp(want[i] - c[i]) / 12);
+        }
+        return ratio;
+    }
+
+    private boolean light(LineTemplate.Unit unit, int count) {
+        return settings.melody() && unit.name() == null && count > 1;
+    }
+
+    private static double clamp(double semitones) {
+        return Math.max(-MAX_SHIFT, Math.min(MAX_SHIFT, semitones));
+    }
+
+    /**
+     * The middle pitch of the voice: the median over the library's whole lines, or over its
+     * pieces if it has none.
+     *
+     * @return Hz, or {@code NaN} if nothing is voiced
+     */
+    public synchronized double voiceHz() {
+        if (Double.isNaN(voiceHz)) {
+            List<Double> full = new ArrayList<>();
+            List<Double> pieces = new ArrayList<>();
+            for (ClipLibrary.Clip c : library.clips()) {
+                Audio a = library.audio(c);
+                for (double h : Prosody.pitch(a.samples(), a.sampleRate())) {
+                    if (h > 0) {
+                        (c.kind().equals(ClipLibrary.FULL) ? full : pieces).add(h);
+                    }
+                }
+            }
+            List<Double> use = full.size() > 200 ? full : pieces;
+            if (!use.isEmpty()) {
+                use.sort(null);
+                voiceHz = use.get(use.size() / 2);
+            }
+        }
+        return voiceHz;
     }
 
     /**

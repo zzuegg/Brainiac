@@ -137,6 +137,30 @@ class NarrationTest {
     }
 
     @Test
+    void bendsPiecesToOneSentenceMelody() {
+        int rate = 24000;
+        float[] glide = new float[rate / 2];
+        double phase = 0;
+        for (int i = 0; i < glide.length; i++) {
+            phase += 2 * Math.PI * (250 + 150.0 * i / glide.length) / rate;   // a word rising like a list item
+            glide[i] = (float) (0.5 * Math.sin(phase));
+        }
+        double[] hz = Prosody.pitch(glide, rate);
+        assertEquals(250 + 150 * 0.055 / 0.5, hz[5], 6);
+        assertEquals(250 + 150 * (hz.length - 5.5) / 100 / 0.5, hz[hz.length - 6], 10);
+        // inside a line the rise is taken out: lowered more at the end than at the start
+        double[] mid = Narrator.melody(glide, rate, 300, 0, 0.3, false);
+        assertTrue(mid[mid.length - 6] < mid[5] * 0.8, mid[5] + " " + mid[mid.length - 6]);
+        float[] bent = Prosody.reshape(glide, rate, 1, mid);
+        assertEquals(glide.length, bent.length, 2);
+        double[] after = Prosody.pitch(bent, rate);
+        assertTrue(after[after.length - 6] - after[5] < 60, after[5] + " " + after[after.length - 6]);
+        // the last word keeps its own movement, only moved
+        double[] last = Narrator.melody(glide, rate, 300, 0.7, 1, true);
+        assertEquals(last[5], last[last.length - 6], 0.02);
+    }
+
+    @Test
     void stretchKeepsPitch() {
         int rate = 24000;
         float[] x = new float[rate];
@@ -205,8 +229,11 @@ class NarrationTest {
         lib.save();
         assertTrue(lib.pauseSeconds() > 0.1);
 
-        Narrator n = Narrator.open(dir);
-        assertTrue(n.speed() >= 1 && n.speed() <= 1.5, "speed " + n.speed());
+        double slowdown = Narrator.open(dir).speed();
+        assertTrue(slowdown >= 1 && slowdown <= 1.5, "speed " + slowdown);
+        // the tone "recognizer" knows words by their pitch and the dips between them, so keep
+        // both as recorded here
+        Narrator n = new Narrator(ClipLibrary.open(dir), new Narrator.Settings(0.03, 1, -16, true, false));
         Narrator.Spoken spoken = n.say(t.source(), Map.of("a", 4, "b", 2));
         assertEquals(Narrator.Mode.SPLICED, spoken.mode());
         assertEquals("was ist vier plus zwei", new ToneHearing(tts).words(spoken.audio()));
