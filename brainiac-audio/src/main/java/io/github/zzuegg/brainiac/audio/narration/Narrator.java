@@ -59,13 +59,13 @@ public final class Narrator {
         public static final double DEFAULT_SPEED = 1.2;
 
         /**
-         * The defaults: 30 ms gaps, the pace of whole lines, -16 LUFS, whole lines first, pieces
-         * as recorded (no sentence melody).
+         * The defaults: 30 ms gaps, -16 LUFS, whole lines first, and pieces played exactly as
+         * recorded: no tempo or pitch change, which listeners heard as a changed voice.
          *
          * @return the settings
          */
         public static Settings defaults() {
-            return new Settings(0.03, 0, -16, true, false);
+            return new Settings(0.03, 1, -16, true, false);
         }
     }
 
