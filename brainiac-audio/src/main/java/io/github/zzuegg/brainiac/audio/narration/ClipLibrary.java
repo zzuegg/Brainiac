@@ -31,6 +31,8 @@ public final class ClipLibrary {
     public static final String FULL = "full";
     /** A piece of a line, said with one melody, cut out at pauses. */
     public static final String PIECE = "piece";
+    /** The template of a piece cut out of a fluent sentence rather than said on its own. */
+    public static final String FLUENT = "fluent";
     /** The melody of a piece inside a line: continuing. */
     public static final String MID = "mid";
 
@@ -149,8 +151,12 @@ public final class ClipLibrary {
     }
 
     private static String key(Clip c) {
-        return c.kind().equals(FULL) ? FULL + "\u0000" + c.text() : PIECE + "\u0000" + c.text() + "\u0000"
-                + c.melody();
+        return c.kind().equals(FULL) ? FULL + "\u0000" + c.text() : pieceKey(c.text(), c.melody());
+    }
+
+    /** A piece's words without the line's closing mark, which its melody already says. */
+    private static String pieceKey(String text, String melody) {
+        return PIECE + "\u0000" + text.replaceAll("[\\s.?!,;:]+$", "") + "\u0000" + melody;
     }
 
     private void index(Clip c) {
@@ -175,7 +181,7 @@ public final class ClipLibrary {
      * @return the clip, or {@code null}
      */
     public synchronized Clip piece(String text, String melody) {
-        return clips.get(PIECE + "\u0000" + text + "\u0000" + melody);
+        return clips.get(pieceKey(text, melody));
     }
 
     /**

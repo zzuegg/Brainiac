@@ -165,6 +165,26 @@ class NarrationTest {
     }
 
     @Test
+    void cutsPiecesOutOfFluentSentences(@TempDir Path dir) {
+        ClipLibrary lib = ClipLibrary.open(dir, "de");
+        ToneSpeech tts = new ToneSpeech();
+        ClipMaker maker = new ClipMaker(tts, new ToneHearing(tts), lib,
+                new ClipMaker.Settings(SpeechOptions.defaults(), 1, -16, 0.8, 5), null, System.out::println);
+        maker.recordMath(0, 4, "+", "=");
+        maker.record(List.of(new ClipMaker.Piece("Was ist", ClipLibrary.MID)));
+        List<LineTemplate.Line> sentences = maker.fluentMath(0, 4, "Was ist", "+");
+        assertTrue(sentences.size() >= 5 && sentences.size() < 20, "sentences " + sentences.size());
+        assertEquals(ClipLibrary.FLUENT, lib.piece("Was ist", ClipLibrary.MID).template());
+        assertEquals(ClipLibrary.FLUENT, lib.piece("drei", "end.").template());
+        assertEquals(ClipLibrary.FLUENT, lib.piece("drei", "end?").template());
+        Narrator n = new Narrator(ClipLibrary.open(dir), new Narrator.Settings(0.03, 1, -16, false, false));
+        Narrator.Spoken q = n.say("Was ist {a} plus {b}?", Map.of("a", 3, "b", 1));
+        assertEquals("was ist drei plus eins", new ToneHearing(tts).words(q.audio()));
+        assertTrue(q.clips().stream().allMatch(c -> ClipLibrary.FLUENT.equals(c.template())));
+        assertEquals("eins plus zwei ist drei", new ToneHearing(tts).words(n.sayMath("1 + 2 = 3").audio()));
+    }
+
+    @Test
     void psolaMovesPitchKeepingLength() {
         int rate = 24000;
         float[] x = new float[rate / 2];

@@ -566,6 +566,198 @@ public final class ClipMaker {
         record(wanted);
     }
 
+    // ---------------------------------------------------------------- pieces from fluent sentences
+
+    /**
+     * Records pieces out of fluent sentences, so each keeps the pace, melody and linking of
+     * running speech. Each sentence is spoken whole with no commas; the pieces already in the
+     * library (said on their own) are laid end to end as a guide and aligned to the take by
+     * dynamic time warping, which says roughly where each piece ends; each cut is then moved
+     * to the quietest frame within 50 ms (a stop's closure, a pause, a fricative's weakest
+     * point). The pieces replace those said on their own, marked {@link ClipLibrary#FLUENT}.
+     *
+     * @param sentences the sentences, each made of pieces the library has
+     * @return how many sentences were cut into pieces
+     */
+    public int recordFluent(List<LineTemplate.Line> sentences) {
+        // the guides, read before any piece is replaced
+        Map<String, float[]> guide = new LinkedHashMap<>();
+        int rate = 0;
+        for (LineTemplate.Line line : sentences) {
+            for (LineTemplate.Unit u : line.units()) {
+                String k = u.text() + "\u0000" + u.position();
+                if (!guide.containsKey(k)) {
+                    ClipLibrary.Clip c = library.pieceOrNear(u.text(), u.position());
+                    if (c == null) {
+                        guide.put(k, null);
+                        continue;
+                    }
+                    Audio a = library.audio(c);
+                    rate = a.sampleRate();
+                    guide.put(k, AudioTools.trim(a.samples(), a.sampleRate(), 0));
+                }
+            }
+        }
+        int done = 0;
+        for (LineTemplate.Line line : sentences) {
+            List<LineTemplate.Unit> units = line.units();
+            List<float[]> parts = new ArrayList<>();
+            boolean ok = units.size() > 1;
+            for (LineTemplate.Unit u : units) {
+                float[] g = guide.get(u.text() + "\u0000" + u.position());
+                if (g == null) {
+                    log.accept("  ! never said on its own: " + u.text() + " (" + u.position() + ")");
+                    ok = false;
+                    break;
+                }
+                parts.add(g);
+            }
+            if (!ok) {
+                log.accept("  ! so not cut: " + line.text());
+                continue;
+            }
+            boolean cut = false;
+            for (Take t : takes(line.text())) {
+                if (t.asr() < settings.minAsr()) {
+                    break;
+                }
+                List<float[]> pieces = cutFluent(t.audio().resample(rate), parts);
+                if (pieces != null) {
+                    for (int i = 0; i < units.size(); i++) {
+                        LineTemplate.Unit u = units.get(i);
+                        library.put(new ClipLibrary.Clip(ClipLibrary.PIECE, ClipLibrary.FLUENT, u.text(), u.position(),
+                                "", t.asr(), t.voice()), new Audio(pieces.get(i), rate));
+                    }
+                    cut = true;
+                    done++;
+                    break;
+                }
+            }
+            if (!cut) {
+                log.accept("  ! could not cut " + line.text());
+            }
+            if (done % 10 == 0) {
+                library.save();
+            }
+        }
+        library.save();
+        return done;
+    }
+
+    /**
+     * Cuts a fluent take into its pieces, guided by the same pieces said on their own.
+     *
+     * @param take the fluent take
+     * @param guides each piece said on its own, trimmed, in order
+     * @return the pieces, or {@code null} if the take does not line up with the guides
+     */
+    static List<float[]> cutFluent(Audio take, List<float[]> guides) {
+        int rate = take.sampleRate();
+        int hop = rate / AudioTools.FRAME_RATE;
+        float[] x = AudioTools.trim(take.samples(), rate, 0.02);
+        int total = 0;
+        for (float[] g : guides) {
+            total += g.length;
+        }
+        float[] joined = new float[total];
+        int[] ends = new int[guides.size()];
+        int at = 0;
+        for (int i = 0; i < guides.size(); i++) {
+            System.arraycopy(guides.get(i), 0, joined, at, guides.get(i).length);
+            at += guides.get(i).length;
+            ends[i] = at / hop;
+        }
+        float[][] gm = AudioTools.logMel(joined, rate);
+        float[][] xm = AudioTools.logMel(x, rate);
+        int[] map = AudioTools.warp(gm, xm);
+        double[] env = AudioTools.envelope(x, rate);
+        int frames = env.length;
+        int minFrames = 6;
+        List<float[]> out = new ArrayList<>();
+        int prev = 0;
+        for (int i = 0; i < guides.size(); i++) {
+            int end;
+            if (i == guides.size() - 1) {
+                end = frames;
+            } else {
+                int aligned = map[Math.min(map.length - 1, Math.max(0, ends[i] - 1))] + 1;
+                int lo = prev + minFrames;
+                int hi = frames - minFrames * (guides.size() - 1 - i);
+                if (lo > hi) {
+                    return null;
+                }
+                end = AudioTools.quietest(env, aligned, 5, lo, hi);
+            }
+            if (end - prev < minFrames) {
+                return null;
+            }
+            float[] p = AudioTools.slice(x, rate, prev, end);
+            AudioTools.fade(p, rate, 0.003, 0.003);
+            out.add(p);
+            prev = end;
+        }
+        return out;
+    }
+
+    /**
+     * Records, out of fluent sentences, every piece that calculations and questions about them
+     * need: each number continuing, ending a statement and ending a question, the operators,
+     * "ist" and the question's lead-in. The sentences are real calculations ("sieben plus acht
+     * ist fünfzehn") and questions ("Was ist sieben plus acht?"), chosen one by one to fill
+     * the most pieces still missing. Needs the pieces said on their own first
+     * ({@link #recordMath}), as guides for cutting.
+     *
+     * @param from the smallest number
+     * @param to the largest number
+     * @param lead the question's lead-in, such as {@code "Was ist"}, or {@code null} for none
+     * @param operators any of {@code "+", "-", "×", "÷"}
+     * @return the sentences recorded
+     */
+    public List<LineTemplate.Line> fluentMath(int from, int to, String lead, String... operators) {
+        List<LineTemplate.Line> candidates = new ArrayList<>();
+        for (String c : MathReader.calculations(from, to, operators)) {
+            candidates.add(MathReader.read(c, speller));
+            if (lead != null) {
+                String[] t = c.split(" ");
+                LineTemplate q = LineTemplate.parse(lead + " {a} " + speller.operator(t[1]) + " {b}?");
+                candidates.add(q.render(Map.of("a", Integer.parseInt(t[0]), "b", Integer.parseInt(t[2])), speller));
+            }
+        }
+        java.util.Set<String> wanted = new java.util.LinkedHashSet<>();
+        for (LineTemplate.Line l : candidates) {
+            for (LineTemplate.Unit u : l.units()) {
+                wanted.add(u.text() + "\u0000" + u.position());
+            }
+        }
+        List<LineTemplate.Line> chosen = new ArrayList<>();
+        while (!wanted.isEmpty()) {
+            LineTemplate.Line best = null;
+            int gain = 0;
+            for (LineTemplate.Line l : candidates) {
+                int g = 0;
+                for (LineTemplate.Unit u : l.units()) {
+                    if (wanted.contains(u.text() + "\u0000" + u.position())) {
+                        g++;
+                    }
+                }
+                if (g > gain) {
+                    gain = g;
+                    best = l;
+                }
+            }
+            if (best == null) {
+                break;
+            }
+            chosen.add(best);
+            for (LineTemplate.Unit u : best.units()) {
+                wanted.remove(u.text() + "\u0000" + u.position());
+            }
+        }
+        log.accept("fluent sentences for " + from + " to " + to + ": " + chosen.size());
+        recordFluent(chosen);
+        return chosen;
+    }
+
     /**
      * Every combination of values.
      *

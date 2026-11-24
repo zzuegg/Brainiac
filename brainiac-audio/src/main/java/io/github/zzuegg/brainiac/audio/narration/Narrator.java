@@ -196,7 +196,9 @@ public final class Narrator {
         double[] speeds = new double[count];
         double total0 = 0;
         for (int i = 0; i < count; i++) {
-            raw[i] = AudioTools.trim(library.audio(used.get(i)).resample(rate).samples(), rate, 0.01);
+            float[] clip = library.audio(used.get(i)).resample(rate).samples();
+            // a piece cut from fluent speech keeps its edges: they are the cut, not silence
+            raw[i] = fluent(used.get(i)) ? clip : AudioTools.trim(clip, rate, 0.01);
             speeds[i] = tempo * (light(units.get(i), i, count) ? LIGHT_SPEED : 1);
             total0 += raw[i].length / speeds[i] + gap;
         }
@@ -216,18 +218,29 @@ public final class Narrator {
                     p[k] *= (float) LIGHT_GAIN;
                 }
             }
-            AudioTools.fade(p, rate, 0.004, 0.008);
+            if (!fluent(used.get(i))) {
+                AudioTools.fade(p, rate, 0.004, 0.008);
+            }
             parts.add(p);
             total += p.length + gap;
             t += (p.length + gap) / (double) rate;
         }
-        float[] x = new float[total];
+        // pieces cut from fluent speech run straight on, overlapping by their 3 ms fades;
+        // others are joined with a short gap
+        int overlap = (int) (0.003 * rate);
+        float[] x = new float[total + overlap];
         int at = 0;
-        for (float[] p : parts) {
-            System.arraycopy(p, 0, x, at, p.length);
-            at += p.length + gap;
+        int end = 0;
+        for (int i = 0; i < count; i++) {
+            float[] p = parts.get(i);
+            for (int k = 0; k < p.length; k++) {
+                x[at + k] += p[k];
+            }
+            end = at + p.length;
+            boolean run = i + 1 < count && fluent(used.get(i)) && fluent(used.get(i + 1));
+            at = run ? Math.max(0, end - overlap) : end + gap;
         }
-        x = java.util.Arrays.copyOf(x, Math.max(0, at - gap));
+        x = java.util.Arrays.copyOf(x, end);
         Audio a = Loudness.normalize(new Audio(x, rate), settings.targetLufs(), -1);
         return new Spoken(line.text(), a, Mode.SPLICED, used);
     }
@@ -303,6 +316,10 @@ public final class Narrator {
             ratio[i] = Math.pow(2, clamp(want[i] - c[i]) / 12);
         }
         return ratio;
+    }
+
+    private static boolean fluent(ClipLibrary.Clip clip) {
+        return ClipLibrary.FLUENT.equals(clip.template());
     }
 
     private boolean light(LineTemplate.Unit unit, int index, int count) {

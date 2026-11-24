@@ -226,6 +226,146 @@ final class AudioTools {
         return y;
     }
 
+    /**
+     * Log-mel frames (10 ms hop, 25 ms window, 40 bands up to 8 kHz), with each band's mean
+     * removed, for comparing takes of the same words.
+     *
+     * @param x the samples
+     * @param rate the sample rate
+     * @return {@code [frames][40]}
+     */
+    static float[][] logMel(float[] x, int rate) {
+        int hop = rate / FRAME_RATE;
+        int win = (int) (rate * 0.025);
+        int nFft = Integer.highestOneBit(win - 1) << 1;
+        int bands = 40;
+        int frames = Math.max(1, (x.length + hop - 1) / hop);
+        float[][] fb = melBank(rate, nFft, bands, 60, Math.min(8000, rate / 2.0));
+        float[][] out = new float[frames][bands];
+        double[] re = new double[nFft];
+        double[] im = new double[nFft];
+        for (int f = 0; f < frames; f++) {
+            Arrays.fill(re, 0);
+            Arrays.fill(im, 0);
+            int from = f * hop + hop / 2 - win / 2;
+            for (int i = 0; i < win; i++) {
+                int at = from + i;
+                if (at >= 0 && at < x.length) {
+                    re[i] = x[at] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (win - 1)));
+                }
+            }
+            fft(re, im);
+            for (int m = 0; m < bands; m++) {
+                double e = 0;
+                for (int k = 0; k <= nFft / 2; k++) {
+                    if (fb[m][k] != 0) {
+                        e += fb[m][k] * (re[k] * re[k] + im[k] * im[k]);
+                    }
+                }
+                out[f][m] = (float) Math.log(e + 1e-8);
+            }
+        }
+        for (int m = 0; m < bands; m++) {
+            double mean = 0;
+            for (float[] fr : out) {
+                mean += fr[m];
+            }
+            mean /= frames;
+            for (float[] fr : out) {
+                fr[m] -= (float) mean;
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Dynamic time warping between two takes: for each frame of {@code a}, the frame of
+     * {@code b} the best path matches it to (the middle one if several).
+     *
+     * @param a the first take's frames
+     * @param b the second take's frames
+     * @return {@code map[i]}, a frame of {@code b} for frame {@code i} of {@code a}
+     */
+    static int[] warp(float[][] a, float[][] b) {
+        int n = a.length;
+        int m = b.length;
+        double[][] cost = new double[n + 1][m + 1];
+        for (double[] row : cost) {
+            Arrays.fill(row, Double.POSITIVE_INFINITY);
+        }
+        cost[0][0] = 0;
+        for (int i = 1; i <= n; i++) {
+            for (int j = 1; j <= m; j++) {
+                double d = 0;
+                float[] x = a[i - 1];
+                float[] y = b[j - 1];
+                for (int k = 0; k < x.length; k++) {
+                    double t = x[k] - y[k];
+                    d += t * t;
+                }
+                d = Math.sqrt(d);
+                cost[i][j] = d + Math.min(cost[i - 1][j - 1], Math.min(cost[i - 1][j], cost[i][j - 1]));
+            }
+        }
+        int[] lo = new int[n];
+        int[] hi = new int[n];
+        Arrays.fill(lo, Integer.MAX_VALUE);
+        int i = n;
+        int j = m;
+        while (i > 0 && j > 0) {
+            lo[i - 1] = Math.min(lo[i - 1], j - 1);
+            hi[i - 1] = Math.max(hi[i - 1], j - 1);
+            double diag = cost[i - 1][j - 1];
+            double up = cost[i - 1][j];
+            double left = cost[i][j - 1];
+            if (diag <= up && diag <= left) {
+                i--;
+                j--;
+            } else if (up <= left) {
+                i--;
+            } else {
+                j--;
+            }
+        }
+        int[] map = new int[n];
+        for (int k = 0; k < n; k++) {
+            map[k] = lo[k] == Integer.MAX_VALUE ? (k > 0 ? map[k - 1] : 0) : (lo[k] + hi[k]) / 2;
+        }
+        return map;
+    }
+
+    /**
+     * Text reduced for comparing what was said: numbers spelled, lower case, no punctuation, no spaces or hyphens (German writes "zweiundvierzig" and
+     * Whisper may write "42").
+     *
+     * @param text the text
+     * @param speller the language's number words
+     * @return the reduced text
+
+    /**
+     * The quietest frame near another, where a cut is least heard (a stop's closure, a pause,
+     * the weakest part of a fricative).
+     *
+     * @param env the envelope
+     * @param frame the frame to look around
+     * @param reach how many frames to look on each side
+     * @param lo the first frame allowed
+     * @param hi the last frame allowed
+     * @return the frame
+     */
+    static int quietest(double[] env, int frame, int reach, int lo, int hi) {
+        int from = Math.max(lo, frame - reach);
+        int to = Math.min(hi, frame + reach);
+        int best = Math.max(lo, Math.min(hi, frame));
+        for (int f = from; f <= to; f++) {
+            // a little pull towards the aligned frame, so equal dips are broken by closeness
+            if (env[f] + 0.05 * Math.abs(f - frame) < env[best] + 0.05 * Math.abs(best - frame)) {
+                best = f;
+            }
+        }
+        return best;
+    }
+
     private static float[][] melBank(int rate, int nFft, int bands, double lo, double hi) {
         double mLo = 2595 * Math.log10(1 + lo / 700);
         double mHi = 2595 * Math.log10(1 + hi / 700);
