@@ -351,9 +351,35 @@ public final class ClipMaker {
     record Cut(int[] frames, double score) {
     }
 
+    /** The words of units {@code from} to {@code to - 1}, normalized. */
+    private String words(List<LineTemplate.Unit> units, int from, int to) {
+        StringBuilder b = new StringBuilder();
+        for (int i = from; i < to; i++) {
+            b.append(units.get(i).text()).append(' ');
+        }
+        return AudioTools.normalize(b.toString(), speller);
+    }
+
+    /**
+     * How well a cut at {@code frame} splits a take after unit {@code b}: recognition of the
+     * audio before it against the units up to {@code b}, and of the audio after it against
+     * the rest, the lower of the two. Whole stretches are heard far more reliably than one
+     * short word on its own.
+     */
+    private double boundary(float[] x, int rate, int frames, List<LineTemplate.Unit> units, int b, int frame) {
+        double before = AudioTools.similarity(words(units, 0, b + 1),
+                AudioTools.normalize(hear(AudioTools.slice(x, rate, 0, frame), rate), speller));
+        if (before < 0.5) {
+            return before;
+        }
+        double after = AudioTools.similarity(words(units, b + 1, units.size()),
+                AudioTools.normalize(hear(AudioTools.slice(x, rate, frame, frames), rate), speller));
+        return Math.min(before, after);
+    }
+
     /**
      * Cuts a take into its units: each boundary at a quiet dip, tried nearest the place the
-     * letters predict first, until recognition hears the unit before it.
+     * letters predict first, until recognition hears the right words on both sides of it.
      */
     Cut cutByRecognition(Audio take, List<LineTemplate.Unit> units) {
         float[] x = take.samples();
@@ -384,18 +410,16 @@ public final class ClipMaker {
                 }
             }
             cand.sort(Comparator.comparingDouble(v -> Math.abs(v.frame() - expected) - 0.5 * v.depth()));
-            String want = AudioTools.normalize(units.get(b).text(), speller);
             int best = (int) Math.round(expected);
             double bestSim = -1;
             for (int c = 0; c < Math.min(6, cand.size()); c++) {
                 int f = cand.get(c).frame();
-                double sim = AudioTools.similarity(want, AudioTools.normalize(
-                        hear(AudioTools.slice(x, rate, prev, f), rate), speller));
+                double sim = boundary(x, rate, env.length, units, b, f);
                 if (sim > bestSim) {
                     bestSim = sim;
                     best = f;
                 }
-                if (sim >= 0.85) {
+                if (sim >= 0.9) {
                     break;
                 }
             }
@@ -403,16 +427,13 @@ public final class ClipMaker {
             score = Math.min(score, Math.max(0, bestSim));
             prev = best;
         }
-        String last = AudioTools.normalize(units.get(k - 1).text(), speller);
-        double sim = AudioTools.similarity(last, AudioTools.normalize(
-                hear(AudioTools.slice(x, rate, prev, env.length), rate), speller));
-        return new Cut(cuts, Math.min(score, sim));
+        return new Cut(cuts, score);
     }
 
     /**
      * Cuts a take of the template by aligning it to the frame: each of the frame's cuts maps
-     * through the warping path and snaps to a nearby dip; the units of {@code name} are then
-     * checked by recognition, moving their edges to other dips until they match.
+     * through the warping path and snaps to a nearby dip; the edges of the units of {@code
+     * name} are then checked by recognition on both sides, moving to other dips until they match.
      */
     Cut cutByWarp(Audio frame, int[] frameCut, Audio take, List<LineTemplate.Unit> units, String name) {
         int rate = take.sampleRate();
@@ -427,41 +448,27 @@ public final class ClipMaker {
             cuts[b] = snap(valleys, mapped, 8, mapped);
         }
         double score = 1;
-        for (int i = 0; i < units.size(); i++) {
-            if (!name.equals(units.get(i).name())) {
+        for (int b = 0; b < cuts.length; b++) {
+            boolean edge = name.equals(units.get(b).name()) || name.equals(units.get(b + 1).name());
+            if (!edge) {
                 continue;
             }
-            String want = AudioTools.normalize(units.get(i).text(), speller);
-            List<Integer> lefts = i == 0 ? List.of(0) : options(valleys, cuts[i - 1], 15);
-            List<Integer> rights = i == units.size() - 1 ? List.of(env.length) : options(valleys, cuts[i], 15);
             double bestSim = -1;
-            int bestL = lefts.get(0);
-            int bestR = rights.get(0);
-            int tried = 0;
-            outer:
-            for (int l : lefts) {
-                for (int r : rights) {
-                    if (r - l < 8) {
-                        continue;
-                    }
-                    double sim = AudioTools.similarity(want, AudioTools.normalize(
-                            hear(AudioTools.slice(x, rate, l, r), rate), speller));
-                    if (sim > bestSim) {
-                        bestSim = sim;
-                        bestL = l;
-                        bestR = r;
-                    }
-                    if (sim >= 0.9 || ++tried >= 9) {
-                        break outer;
-                    }
+            int best = cuts[b];
+            for (int f : options(valleys, cuts[b], 15)) {
+                if (b > 0 && f <= cuts[b - 1] + 4 || b + 1 < cuts.length && f >= cuts[b + 1] - 4) {
+                    continue;
+                }
+                double sim = boundary(x, rate, env.length, units, b, f);
+                if (sim > bestSim) {
+                    bestSim = sim;
+                    best = f;
+                }
+                if (sim >= 0.9) {
+                    break;
                 }
             }
-            if (i > 0) {
-                cuts[i - 1] = bestL;
-            }
-            if (i < units.size() - 1) {
-                cuts[i] = bestR;
-            }
+            cuts[b] = best;
             score = Math.min(score, Math.max(0, bestSim));
         }
         return new Cut(cuts, score);
