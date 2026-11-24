@@ -181,6 +181,10 @@ class NarrationTest {
         Narrator.Spoken q = n.say("Was ist {a} plus {b}?", Map.of("a", 3, "b", 1));
         assertEquals("was ist drei plus eins", new ToneHearing(tts).words(q.audio()));
         assertTrue(q.clips().stream().allMatch(c -> ClipLibrary.FLUENT.equals(c.template())));
+        // each number from the same place in a sentence of the same shape: the first number of
+        // a question cut from a question, not from a sum
+        assertEquals(List.of("mid@q0", "mid@q1", "mid@q2", "end?@q3"), q.clips().stream()
+                .map(ClipLibrary.Clip::melody).toList());
         assertEquals("eins plus zwei ist drei", new ToneHearing(tts).words(n.sayMath("1 + 2 = 3").audio()));
     }
 

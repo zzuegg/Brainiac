@@ -210,7 +210,7 @@ public final class Narrator {
         for (int i = 0; i < count; i++) {
             double[] ratio = Double.isNaN(ref) ? null
                     : melody(raw[i], rate, ref, t / lineSeconds, (t + raw[i].length / speeds[i] / rate) / lineSeconds,
-                            i == count - 1 ? units.get(i).position() : null);
+                            i == count - 1 ? ClipLibrary.base(units.get(i).position()) : null);
             float[] p = ratio == null ? Prosody.psola(raw[i], rate, speeds[i], null)
                     : Prosody.psola(raw[i], rate, speeds[i], ratio);
             if (light(units.get(i), i, count)) {
@@ -328,19 +328,39 @@ public final class Narrator {
      */
     List<LineTemplate.Unit> units(LineTemplate.Line line) {
         List<LineTemplate.Unit> out = new ArrayList<>();
-        for (LineTemplate.Unit u : line.units()) {
-            List<String> parts = library.pieceOrNear(u.text(), u.position()) != null ? null
+        List<LineTemplate.Unit> whole = line.units();
+        for (int i = 0; i < whole.size(); i++) {
+            LineTemplate.Unit w = whole.get(i);
+            // each stretch asks for a piece cut from the same place in a sentence of this shape
+            LineTemplate.Unit u = new LineTemplate.Unit(w.text(), w.name(), ClipLibrary.slot(w.position(), line, i));
+            // the whole stretch from this place, else its parts from this place, else the whole
+            // from anywhere, else the parts from anywhere
+            List<String> parts = library.piece(u.text(), u.position()) != null ? null
                     : NumberSpeller.split(u.text().replaceAll("[\\s.?!,;:]+$", ""), speller.numberParts());
+            if (parts != null && parts.size() > 1 && !inPlace(parts, u.position(), line, i)
+                    && library.pieceOrNear(u.text(), u.position()) != null) {
+                parts = null;
+            }
             if (parts == null || parts.size() < 2) {
                 out.add(u);
                 continue;
             }
             for (int k = 0; k < parts.size(); k++) {
                 out.add(new LineTemplate.Unit(parts.get(k), u.name(),
-                        k < parts.size() - 1 ? ClipLibrary.MID : u.position()));
+                        k < parts.size() - 1 ? ClipLibrary.slot(ClipLibrary.MID, line, i) : u.position()));
             }
         }
         return out;
+    }
+
+    private boolean inPlace(List<String> parts, String position, LineTemplate.Line line, int index) {
+        for (int k = 0; k < parts.size(); k++) {
+            String m = k < parts.size() - 1 ? ClipLibrary.slot(ClipLibrary.MID, line, index) : position;
+            if (library.piece(parts.get(k), m) == null) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean fluent(ClipLibrary.Clip clip) {

@@ -625,8 +625,16 @@ public final class ClipMaker {
                 if (pieces != null) {
                     for (int i = 0; i < units.size(); i++) {
                         LineTemplate.Unit u = units.get(i);
+                        Audio piece = new Audio(pieces.get(i), rate);
                         library.put(new ClipLibrary.Clip(ClipLibrary.PIECE, ClipLibrary.FLUENT, u.text(), u.position(),
-                                "", t.asr(), t.voice()), new Audio(pieces.get(i), rate));
+                                "", t.asr(), t.voice()), piece);
+                        // also for any place with this melody, unless a fluent piece holds it
+                        String plain = ClipLibrary.base(u.position());
+                        ClipLibrary.Clip had = library.piece(u.text(), plain);
+                        if (had == null || !ClipLibrary.FLUENT.equals(had.template())) {
+                            library.put(new ClipLibrary.Clip(ClipLibrary.PIECE, ClipLibrary.FLUENT, u.text(), plain,
+                                    "", t.asr(), t.voice()), piece);
+                        }
                     }
                     cut = true;
                     done++;
@@ -647,14 +655,18 @@ public final class ClipMaker {
     /**
      * A line's units with each number split into the parts it is built from
      * ({@link NumberSpeller#numberParts()}): "einundfünfzig" becomes "einund", "fünfzig", the
-     * last taking the number's place in the line.
+     * last taking the number's place in the line. Each unit's melody names its place in this
+     * kind of sentence ({@link ClipLibrary#slot}).
      *
      * @param line the line
      * @return the units
      */
     List<LineTemplate.Unit> parts(LineTemplate.Line line) {
         List<LineTemplate.Unit> out = new ArrayList<>();
-        for (LineTemplate.Unit u : line.units()) {
+        List<LineTemplate.Unit> whole = line.units();
+        for (int i = 0; i < whole.size(); i++) {
+            LineTemplate.Unit w = whole.get(i);
+            LineTemplate.Unit u = new LineTemplate.Unit(w.text(), w.name(), ClipLibrary.slot(w.position(), line, i));
             List<String> parts = u.name() == null ? null
                     : NumberSpeller.split(u.text().replaceAll("[\\s.?!,;:]+$", ""), speller.numberParts());
             if (parts == null || parts.size() < 2) {
@@ -663,7 +675,7 @@ public final class ClipMaker {
             }
             for (int k = 0; k < parts.size(); k++) {
                 out.add(new LineTemplate.Unit(parts.get(k), u.name(),
-                        k < parts.size() - 1 ? ClipLibrary.MID : u.position()));
+                        k < parts.size() - 1 ? ClipLibrary.slot(ClipLibrary.MID, line, i) : u.position()));
             }
         }
         return out;
@@ -860,12 +872,12 @@ public final class ClipMaker {
                 cells.add(cell(u));
             }
         }
-        List<Piece> guides = new ArrayList<>();
+        java.util.Set<Piece> guides = new java.util.LinkedHashSet<>();
         for (String c : cells) {
             int z = c.indexOf('\u0000');
-            guides.add(new Piece(c.substring(0, z), c.substring(z + 1)));
+            guides.add(new Piece(c.substring(0, z), ClipLibrary.base(c.substring(z + 1))));
         }
-        record(guides);
+        record(new ArrayList<>(guides));
         recordFluent(chosen);
         return chosen;
     }

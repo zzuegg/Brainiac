@@ -154,6 +154,33 @@ public final class ClipLibrary {
         return c.kind().equals(FULL) ? FULL + "\u0000" + c.text() : pieceKey(c.text(), c.melody());
     }
 
+    /**
+     * A melody tied to one place in one kind of sentence: the position plus whether the line is
+     * a question or a statement and which of its stretches this is, such as {@code mid@q1} for
+     * the first number of "Was ist sieben plus acht?". A piece cut from a sentence of the same
+     * shape carries the melody that place has; {@link #pieceOrNear} falls back to the plain
+     * position.
+     *
+     * @param position {@code mid}, {@code end.}, {@code end?} or {@code end!}
+     * @param line the line
+     * @param index which of the line's units
+     * @return the melody
+     */
+    public static String slot(String position, LineTemplate.Line line, int index) {
+        return position + "@" + (line.text().endsWith("?") ? "q" : "s") + index;
+    }
+
+    /**
+     * A melody without its place in a sentence.
+     *
+     * @param melody such as {@code mid@q1}
+     * @return such as {@code mid}
+     */
+    public static String base(String melody) {
+        int at = melody.indexOf('@');
+        return at < 0 ? melody : melody.substring(0, at);
+    }
+
     /** A piece's words without the line's closing mark, which its melody already says. */
     private static String pieceKey(String text, String melody) {
         return PIECE + "\u0000" + text.replaceAll("[\\s.?!,;:]+$", "") + "\u0000" + melody;
@@ -193,6 +220,13 @@ public final class ClipLibrary {
      * @return the clip, or {@code null} if the words were never recorded
      */
     public synchronized Clip pieceOrNear(String text, String melody) {
+        if (melody.indexOf('@') >= 0) {
+            Clip exact = piece(text, melody);
+            if (exact != null) {
+                return exact;
+            }
+            melody = base(melody);
+        }
         List<String> order = new ArrayList<>(List.of(melody));
         if (melody.startsWith("end")) {
             order.addAll(List.of("end.", "end!", "end?", MID));
