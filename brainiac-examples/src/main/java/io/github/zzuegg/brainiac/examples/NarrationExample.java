@@ -77,8 +77,11 @@ public final class NarrationExample {
             + " wie ein netter Lehrer, klar und ein wenig langsamer als normal, für ein Lernspiel für Kinder.";
     private static final String MALE_EN = "A warm, calm male voice in his late thirties, friendly and patient like a"
             + " kind teacher, clear and a little slower than normal, for a learning game for children.";
-    private static final String MALE_REF_DE = "Hallo! Ich bin heute dein Begleiter. Wir zählen, rechnen und spielen"
-            + " zusammen, und am Ende bekommst du einen goldenen Stern.";
+    // calm voices read a calm reference: an excited one ("Hallo! ... goldenen Stern") is copied into every line
+    private static final String CALM_REF_DE = "Schön, dass du da bist. Wir rechnen heute zusammen, ganz in Ruhe,"
+            + " Schritt für Schritt.";
+    private static final String CALM_REF_EN = "Nice to have you here. Today we'll do some sums together, nice and"
+            + " slowly, one step at a time.";
 
     /**
      * Runs the example.
@@ -124,7 +127,9 @@ public final class NarrationExample {
             // 1. the voice: one reference clip, designed once
             Path refFile = o.containsKey("reference") ? Path.of(o.get("reference")) : out.resolve("reference.wav");
             boolean male = o.containsKey("male");
-            String refText = o.getOrDefault("reference-text", de ? (male ? MALE_REF_DE : REF_DE) : REF_EN);
+            boolean calm = male || o.containsKey("calm");
+            String refText = o.getOrDefault("reference-text", calm ? (de ? CALM_REF_DE : CALM_REF_EN)
+                    : de ? REF_DE : REF_EN);
             if (!Files.isRegularFile(refFile)) {
                 if (!o.containsKey("design")) {
                     throw new IllegalArgumentException("give --design <VoiceDesign folder> or --reference <wav>");
