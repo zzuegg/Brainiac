@@ -1,68 +1,68 @@
-﻿start 2026-11-24T21:42:38.5141842+01:00
+﻿start 2026-11-24T22:04:41.8869136+01:00
 Picked up JAVA_TOOL_OPTIONS: -Dbrainiac.vulkan.memory=10000
 Reusing configuration cache.
-> Task :brainiac-llm:processResources NO-SOURCE
-> Task :brainiac-nn:processResources NO-SOURCE
-> Task :brainiac-data:processResources NO-SOURCE
-> Task :brainiac-examples:processResources NO-SOURCE
-> Task :brainiac-tensor:processResources NO-SOURCE
 > Task :brainiac-autograd:processResources NO-SOURCE
-> Task :brainiac-train:processResources NO-SOURCE
-> Task :brainiac:processResources NO-SOURCE
+> Task :brainiac-data:processResources NO-SOURCE
+> Task :brainiac-llm:processResources NO-SOURCE
+> Task :brainiac-examples:processResources NO-SOURCE
+> Task :brainiac-nn:processResources NO-SOURCE
 > Task :brainiac-evolve:processResources NO-SOURCE
 > Task :brainiac-diffusion:processResources NO-SOURCE
-> Task :brainiac-rl:processResources NO-SOURCE
-> Task :brainiac-backend-cuda:processResources UP-TO-DATE
-> Task :brainiac-audio:processResources UP-TO-DATE
-> Task :brainiac-backend-hip:processResources UP-TO-DATE
-> Task :brainiac-io:processResources UP-TO-DATE
+> Task :brainiac:processResources NO-SOURCE
+> Task :brainiac-train:processResources NO-SOURCE
 > Task :brainiac-backend-cpu:processResources UP-TO-DATE
+> Task :brainiac-backend-cuda:processResources UP-TO-DATE
+> Task :brainiac-rl:processResources NO-SOURCE
+> Task :brainiac-backend-hip:processResources UP-TO-DATE
+> Task :brainiac-tensor:processResources NO-SOURCE
+> Task :brainiac-audio:processResources UP-TO-DATE
+> Task :brainiac-io:processResources UP-TO-DATE
 > Task :brainiac-tensor:compileJava UP-TO-DATE
 > Task :brainiac-tensor:classes UP-TO-DATE
 > Task :brainiac-backend-vulkan:processResources UP-TO-DATE
 > Task :brainiac-tensor:jar UP-TO-DATE
-> Task :brainiac-backend-cuda:compileJava UP-TO-DATE
+> Task :brainiac-backend-hip:compileJava UP-TO-DATE
+> Task :brainiac-data:compileJava UP-TO-DATE
+> Task :brainiac-backend-hip:classes UP-TO-DATE
 > Task :brainiac-autograd:compileJava UP-TO-DATE
+> Task :brainiac-autograd:classes UP-TO-DATE
+> Task :brainiac-backend-cpu:compileJava UP-TO-DATE
+> Task :brainiac-backend-cuda:compileJava UP-TO-DATE
 > Task :brainiac-backend-vulkan:compileJava UP-TO-DATE
 > Task :brainiac-backend-vulkan:classes UP-TO-DATE
-> Task :brainiac-backend-cpu:compileJava UP-TO-DATE
-> Task :brainiac-data:compileJava UP-TO-DATE
-> Task :brainiac-backend-cpu:classes UP-TO-DATE
-> Task :brainiac-backend-hip:compileJava UP-TO-DATE
-> Task :brainiac-backend-hip:classes UP-TO-DATE
-> Task :brainiac-autograd:classes UP-TO-DATE
 > Task :brainiac-backend-cuda:classes UP-TO-DATE
-> Task :brainiac-data:classes UP-TO-DATE
-> Task :brainiac-backend-vulkan:jar UP-TO-DATE
-> Task :brainiac-autograd:jar UP-TO-DATE
-> Task :brainiac-backend-cuda:jar UP-TO-DATE
 > Task :brainiac-backend-hip:jar UP-TO-DATE
-> Task :brainiac-data:jar UP-TO-DATE
+> Task :brainiac-backend-cpu:classes UP-TO-DATE
+> Task :brainiac-data:classes UP-TO-DATE
+> Task :brainiac-backend-cuda:jar UP-TO-DATE
+> Task :brainiac-autograd:jar UP-TO-DATE
+> Task :brainiac-backend-vulkan:jar UP-TO-DATE
 > Task :brainiac-backend-cpu:jar UP-TO-DATE
+> Task :brainiac-data:jar UP-TO-DATE
 > Task :brainiac-nn:compileJava UP-TO-DATE
-> Task :brainiac-nn:classes UP-TO-DATE
 > Task :brainiac-io:compileJava UP-TO-DATE
+> Task :brainiac-nn:classes UP-TO-DATE
 > Task :brainiac-io:classes UP-TO-DATE
-> Task :brainiac-nn:jar UP-TO-DATE
 > Task :brainiac-io:jar UP-TO-DATE
-> Task :brainiac-train:compileJava UP-TO-DATE
+> Task :brainiac-nn:jar UP-TO-DATE
 > Task :brainiac-llm:compileJava UP-TO-DATE
-> Task :brainiac-llm:classes UP-TO-DATE
-> Task :brainiac-train:classes UP-TO-DATE
 > Task :brainiac-diffusion:compileJava UP-TO-DATE
+> Task :brainiac-llm:classes UP-TO-DATE
+> Task :brainiac-train:compileJava UP-TO-DATE
 > Task :brainiac-diffusion:classes UP-TO-DATE
+> Task :brainiac-train:classes UP-TO-DATE
 > Task :brainiac-llm:jar UP-TO-DATE
 > Task :brainiac-diffusion:jar UP-TO-DATE
 > Task :brainiac-train:jar UP-TO-DATE
 > Task :brainiac-audio:compileJava UP-TO-DATE
 > Task :brainiac-audio:classes UP-TO-DATE
 > Task :brainiac-evolve:compileJava UP-TO-DATE
-> Task :brainiac-rl:compileJava UP-TO-DATE
 > Task :brainiac-evolve:classes UP-TO-DATE
+> Task :brainiac-rl:compileJava UP-TO-DATE
 > Task :brainiac-rl:classes UP-TO-DATE
-> Task :brainiac-audio:jar UP-TO-DATE
-> Task :brainiac-evolve:jar UP-TO-DATE
 > Task :brainiac-rl:jar UP-TO-DATE
+> Task :brainiac-evolve:jar UP-TO-DATE
+> Task :brainiac-audio:jar UP-TO-DATE
 > Task :brainiac:compileJava UP-TO-DATE
 > Task :brainiac:classes UP-TO-DATE
 > Task :brainiac:jar UP-TO-DATE
@@ -75,60 +75,65 @@ Picked up JAVA_TOOL_OPTIONS: -Dbrainiac.vulkan.memory=10000
 WARNING: Using incubator modules: jdk.incubator.vector
 device vulkan (AMD Radeon RX 9070 XT), BFLOAT16; 3 takes at temperature 0.6
 reference voice D:\_Programming\Brainiac-models-large\narration-check\reference.wav (9.8 s)
-fluent sentences for 0 to 20: 42
+fluent sentences for 0 to 20: 46
   null plus null ist null                                      asr 1.00 voice 0.98 
-  Was ist eins minus null?                                     asr 1.00 voice 0.98 
-  zwei mal zwei ist vier                                       asr 1.00 voice 0.98 
-  drei geteilt durch drei ist eins                             asr 1.00 voice 0.99 
-  vier plus vier ist acht                                      asr 1.00 voice 0.98 
-  f�nf plus f�nf ist zehn                                      asr 1.00 voice 0.98 
-  sechs plus sechs ist zw�lf                                   asr 1.00 voice 0.98 
-  sieben plus sieben ist vierzehn                              asr 1.00 voice 0.98 
-  acht plus acht ist sechzehn                                  asr 1.00 voice 0.98 
-  neun plus neun ist achtzehn                                  asr 1.00 voice 0.99 
+  Was ist null plus null?                                      asr 1.00 voice 0.98 
+  zwei minus eins ist eins                                     asr 1.00 voice 0.98 
+  eins mal zwei ist zwei                                       asr 1.00 voice 0.98 
+  neun geteilt durch drei ist drei                             asr 1.00 voice 0.99 
+  drei plus vier ist sieben                                    asr 1.00 voice 0.99 
+  vier plus f�nf ist neun                                      asr 1.00 voice 0.98 
+  f�nf plus sechs ist elf                                      asr 1.00 voice 0.98 
+  sechs plus sieben ist dreizehn                               asr 1.00 voice 0.99 
+  sieben plus acht ist f�nfzehn                                asr 1.00 voice 0.99 
+  acht plus neun ist siebzehn                                  asr 1.00 voice 0.99 
   zehn plus zehn ist zwanzig                                   asr 1.00 voice 0.98 
-  dreizehn minus elf ist zwei                                  asr 1.00 voice 0.99 
-  f�nfzehn minus zw�lf ist drei                                asr 1.00 voice 0.99 
-  neunzehn minus vierzehn ist f�nf                             asr 1.00 voice 0.98 
-  null plus siebzehn ist siebzehn                              asr 1.00 voice 0.98 
-  eins plus achtzehn ist neunzehn                              asr 1.00 voice 0.99 
-  Was ist sechzehn plus eins?                                  asr 1.00 voice 0.99 
-  Was ist zwanzig minus zwei?                                  asr 1.00 voice 0.98 
-  Was ist null plus drei?                                      asr 1.00 voice 0.98 
-  Was ist null plus vier?                                      asr 1.00 voice 0.99 
-  Was ist null plus f�nf?                                      asr 1.00 voice 0.98 
-  null plus sechs ist sechs                                    asr 1.00 voice 0.98 
-  Was ist null plus sechs?                                     asr 1.00 voice 0.98 
-  null plus sieben ist sieben                                  asr 1.00 voice 0.98 
-  Was ist null plus sieben?                                    asr 1.00 voice 0.98 
-  Was ist null plus acht?                                      asr 1.00 voice 0.98 
-  null plus neun ist neun                                      asr 1.00 voice 0.98 
-  Was ist null plus neun?                                      asr 1.00 voice 0.98 
-  Was ist null plus zehn?                                      asr 1.00 voice 0.98 
-  null plus elf ist elf                                        asr 1.00 voice 0.98 
-  Was ist null plus elf?                                       asr 1.00 voice 0.98 
-  Was ist null plus zw�lf?                                     asr 1.00 voice 0.98 
-  null plus dreizehn ist dreizehn                              asr 1.00 voice 0.99 
-  Was ist null plus dreizehn?                                  asr 1.00 voice 0.99 
-  Was ist null plus vierzehn?                                  asr 1.00 voice 0.99 
-  null plus f�nfzehn ist f�nfzehn                              asr 1.00 voice 0.99 
-  Was ist null plus f�nfzehn?                                  asr 1.00 voice 0.98 
-  Was ist null plus sechzehn?                                  asr 1.00 voice 0.98 
-  Was ist null plus siebzehn?                                  asr 1.00 voice 0.98 
-  Was ist null plus achtzehn?                                  asr 1.00 voice 0.98 
-  Was ist null plus neunzehn?                                  asr 1.00 voice 0.98 
-  Was ist null plus zwanzig?                                   asr 1.00 voice 0.98 
+  Was ist eins minus eins?                                     asr 1.00 voice 0.98 
+  f�nfzehn minus elf ist vier                                  asr 1.00 voice 0.99 
+  siebzehn minus zw�lf ist f�nf                                asr 1.00 voice 0.99 
+  neunzehn minus dreizehn ist sechs                            asr 1.00 voice 0.99 
+  Was ist zwei mal zwei?                                       asr 1.00 voice 0.98 
+  Was ist drei geteilt durch drei?                             asr 1.00 voice 0.98 
+  null plus vierzehn ist vierzehn                              asr 1.00 voice 0.98 
+  null plus sechzehn ist sechzehn                              asr 1.00 voice 0.98 
+  null plus achtzehn ist achtzehn                              asr 1.00 voice 0.99 
+  null plus neunzehn ist neunzehn                              asr 1.00 voice 0.98 
+  Was ist vier plus vier?                                      asr 1.00 voice 0.98 
+  Was ist f�nf plus f�nf?                                      asr 1.00 voice 0.97 
+  Was ist sechs plus sechs?                                    asr 1.00 voice 0.97 
+  Was ist sieben plus sieben?                                  asr 1.00 voice 0.98 
+  Was ist acht plus acht?                                      asr 1.00 voice 0.98 
+  Was ist neun plus neun?                                      asr 1.00 voice 0.99 
+  Was ist zehn plus zehn?                                      asr 1.00 voice 0.99 
+  elf plus eins ist zw�lf                                      asr 1.00 voice 0.98 
+  Was ist elf minus elf?                                       asr 1.00 voice 0.98 
+  zw�lf minus zwei ist zehn                                    asr 1.00 voice 0.99 
+  Was ist zw�lf minus zw�lf?                                   asr 1.00 voice 0.98 
+  dreizehn minus f�nf ist acht                                 asr 1.00 voice 0.99 
+  Was ist dreizehn minus dreizehn?                             asr 1.00 voice 0.99 
+  Was ist vierzehn minus vierzehn?                             asr 1.00 voice 0.98 
+  Was ist f�nfzehn minus f�nfzehn?                             asr 1.00 voice 0.98 
+  sechzehn minus f�nfzehn ist eins                             asr 1.00 voice 0.98 
+  Was ist sechzehn minus sechzehn?                             asr 1.00 voice 0.98 
+  Was ist siebzehn minus siebzehn?                             asr 1.00 voice 0.98 
+  achtzehn minus siebzehn ist eins                             asr 1.00 voice 0.99 
+  Was ist achtzehn minus achtzehn?                             asr 1.00 voice 0.98 
+  Was ist neunzehn minus neunzehn?                             asr 1.00 voice 0.99 
+  zwanzig minus zwanzig ist null                               asr 1.00 voice 0.98 
+  Was ist zwanzig minus zwanzig?                               asr 1.00 voice 0.99 
+  vierzehn plus null ist vierzehn                              asr 1.00 voice 0.98 
 Was ist {a} plus {b}?: 100 lines
 {n0} plus {n1} ist {n2}: 1900 lines
 Du bist auf dem {n:ordinal:en} Platz!: 8 lines
 Noch {n:cardinal:eine} {n|Runde|Runden}!: 5 lines
-fluent sentences for 5 lines: 4
-  Neunund, achtund, sechzig, siebenund, siebenund.             asr 1.00 voice 0.99 
-  zweihundertzweiundf�nfzig minus hunderteinunddrei�ig ist hunderteinundzwanzig asr 1.00 voice 0.99 
-  Was ist dreiundvierzig plus zweihundertdreiundf�nfzig?       asr 1.00 voice 0.99 
-  hundertneunundzwanzig plus hundertneunundzwanzig ist zweihundertachtundf�nfzig asr 1.00 voice 0.99 
-  Was ist zweihundertdreiundsechzig minus hundertsiebenundzwanzig? asr 1.00 voice 0.99 
-library ready: 109 clips (625 s so far)
+fluent sentences for 5 lines: 5
+  F�nfund, sechsund, sechsund.                                 asr 1.00 voice 0.99 
+  zweihundertzweiundvierzig minus einundzwanzig ist zweihunderteinundzwanzig asr 1.00 voice 0.99 
+  hunderteinundzwanzig plus f�nfunddrei�ig ist hundertsechsundf�nfzig asr 1.00 voice 0.99 
+  Was ist hunderteinundf�nfzig plus neunundf�nfzig?            asr 1.00 voice 0.98 
+  Was ist zweihundertf�nfundf�nfzig minus hunderteinundzwanzig? asr 1.00 voice 0.99 
+  zweihundertdreiundf�nfzig minus zweihundertzweiundf�nfzig ist eins asr 1.00 voice 0.99 
+library ready: 254 clips (679 s so far)
   Was ist                                                      asr 1.00 voice 0.96 
   sieben                                                       asr 1.00 voice 0.96 
   plus                                                         asr 1.00 voice 0.95 
@@ -196,9 +201,9 @@ sample 11: vier mal drei ist zw�lf
   ist                                                          asr 1.00 voice 0.96 
   drei                                                         asr 1.00 voice 0.97 
 sample 12: zw�lf geteilt durch vier ist drei
-done in 1286 s
+done in 1352 s
 
-BUILD SUCCESSFUL in 21m 28s
+BUILD SUCCESSFUL in 22m 34s
 41 actionable tasks: 1 executed, 40 up-to-date
 Configuration cache entry reused.
-exit 0 elapsed 00:21:28.5783101 end 2026-11-24T22:04:07.0648099+01:00
+exit 0 elapsed 00:22:35.0704689 end 2026-11-24T22:27:16.9323655+01:00
