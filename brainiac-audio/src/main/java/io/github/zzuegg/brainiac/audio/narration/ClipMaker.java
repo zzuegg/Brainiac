@@ -825,13 +825,6 @@ public final class ClipMaker {
 
     private List<LineTemplate.Line> chooseAndRecord(List<LineTemplate.Line> candidates, java.util.Set<String> wanted,
             String what) {
-        // every piece said on its own first, as a guide for cutting (skips those recorded)
-        List<Piece> guides = new ArrayList<>();
-        for (String c : wanted) {
-            int z = c.indexOf('\u0000');
-            guides.add(new Piece(c.substring(0, z), c.substring(z + 1)));
-        }
-        record(guides);
         java.util.Set<String> left = new java.util.LinkedHashSet<>(wanted);
         List<LineTemplate.Line> chosen = new ArrayList<>();
         while (!left.isEmpty()) {
@@ -859,6 +852,20 @@ public final class ClipMaker {
             }
         }
         log.accept("fluent sentences " + what + ": " + chosen.size());
+        // every piece of the chosen sentences said on its own first, as a guide for cutting,
+        // the ones not wanted too (skips those recorded)
+        java.util.Set<String> cells = new java.util.LinkedHashSet<>();
+        for (LineTemplate.Line l : chosen) {
+            for (LineTemplate.Unit u : parts(l)) {
+                cells.add(cell(u));
+            }
+        }
+        List<Piece> guides = new ArrayList<>();
+        for (String c : cells) {
+            int z = c.indexOf('\u0000');
+            guides.add(new Piece(c.substring(0, z), c.substring(z + 1)));
+        }
+        record(guides);
         recordFluent(chosen);
         return chosen;
     }
