@@ -364,15 +364,16 @@ public final class ClipMaker {
      * How well a cut at {@code frame} splits a take after unit {@code b}: recognition of the
      * audio before it against the units up to {@code b}, and of the audio after it against
      * the rest, the lower of the two. Whole stretches are heard far more reliably than one
-     * short word on its own.
+     * short word on its own. Only the side at the cut counts: recognition often finishes a
+     * stretch cut short with words that are not there, which says nothing about the cut.
      */
     private double boundary(float[] x, int rate, int frames, List<LineTemplate.Unit> units, int b, int frame) {
-        double before = AudioTools.similarity(words(units, 0, b + 1),
+        double before = AudioTools.prefixSimilarity(words(units, 0, b + 1),
                 AudioTools.normalize(hear(AudioTools.slice(x, rate, 0, frame), rate), speller));
         if (before < 0.5) {
             return before;
         }
-        double after = AudioTools.similarity(words(units, b + 1, units.size()),
+        double after = AudioTools.suffixSimilarity(words(units, b + 1, units.size()),
                 AudioTools.normalize(hear(AudioTools.slice(x, rate, frame, frames), rate), speller));
         return Math.min(before, after);
     }

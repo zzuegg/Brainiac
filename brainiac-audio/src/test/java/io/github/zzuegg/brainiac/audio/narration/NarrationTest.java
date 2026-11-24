@@ -119,6 +119,14 @@ class NarrationTest {
     }
 
     @Test
+    void cutChecksIgnoreWordsBeyondTheCut() {
+        assertEquals(1.0, AudioTools.prefixSimilarity("wasist", "wasistdas"), 1e-9);
+        assertEquals(1.0, AudioTools.suffixSimilarity("plusacht", "sprechtplusacht"), 1e-9);
+        assertTrue(AudioTools.prefixSimilarity("wasistdrei", "wasist") < 0.7);
+        assertTrue(AudioTools.suffixSimilarity("siebenplus", "benplus") < 0.8);
+    }
+
+    @Test
     void loudnessNormalizes() {
         int rate = 24000;
         float[] x = new float[rate * 2];

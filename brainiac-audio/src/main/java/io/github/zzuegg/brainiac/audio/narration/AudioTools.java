@@ -443,6 +443,53 @@ final class AudioTools {
     }
 
     /**
+     * How well {@code heard} starts with {@code want}, ignoring whatever it says after:
+     * recognition given a line cut short often finishes it ("Was ist" heard as "Was ist
+     * das?"), which says nothing about the cut.
+     *
+     * @param want the expected text, normalized
+     * @param heard what was heard, normalized
+     * @return 0 to 1
+     */
+    static double prefixSimilarity(String want, String heard) {
+        if (want.isEmpty()) {
+            return 1;
+        }
+        int[] prev = new int[heard.length() + 1];
+        int[] cur = new int[heard.length() + 1];
+        for (int j = 0; j <= heard.length(); j++) {
+            prev[j] = j;
+        }
+        for (int i = 1; i <= want.length(); i++) {
+            cur[0] = i;
+            for (int j = 1; j <= heard.length(); j++) {
+                int sub = prev[j - 1] + (want.charAt(i - 1) == heard.charAt(j - 1) ? 0 : 1);
+                cur[j] = Math.min(sub, Math.min(prev[j] + 1, cur[j - 1] + 1));
+            }
+            int[] t = prev;
+            prev = cur;
+            cur = t;
+        }
+        int best = Integer.MAX_VALUE;
+        for (int d : prev) {
+            best = Math.min(best, d);
+        }
+        return Math.max(0, 1 - (double) best / want.length());
+    }
+
+    /**
+     * How well {@code heard} ends with {@code want}, ignoring whatever it says before.
+     *
+     * @param want the expected text, normalized
+     * @param heard what was heard, normalized
+     * @return 0 to 1
+     */
+    static double suffixSimilarity(String want, String heard) {
+        return prefixSimilarity(new StringBuilder(want).reverse().toString(),
+                new StringBuilder(heard).reverse().toString());
+    }
+
+    /**
      * A rough voice print: the mean and spread of each log-mel band over the voiced frames,
      * before mean removal. Used to rank takes when no speaker encoder is given.
      *
