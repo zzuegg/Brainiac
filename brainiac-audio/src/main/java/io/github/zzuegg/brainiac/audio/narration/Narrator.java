@@ -177,7 +177,8 @@ public final class Narrator {
     public Spoken splice(LineTemplate.Line line) {
         List<ClipLibrary.Clip> used = new ArrayList<>();
         List<String> missing = new ArrayList<>();
-        for (LineTemplate.Unit u : line.units()) {
+        List<LineTemplate.Unit> units = units(line);
+        for (LineTemplate.Unit u : units) {
             ClipLibrary.Clip c = library.pieceOrNear(u.text(), u.position());
             if (c == null) {
                 missing.add(u.text());
@@ -190,7 +191,6 @@ public final class Narrator {
         int rate = library.audio(used.get(0)).sampleRate();
         int gap = (int) (settings.gapSeconds() * rate);
         double tempo = speed();
-        List<LineTemplate.Unit> units = line.units();
         int count = used.size();
         float[][] raw = new float[count][];
         double[] speeds = new double[count];
@@ -318,6 +318,31 @@ public final class Narrator {
         return ratio;
     }
 
+    /**
+     * A line's units, with any number the library has no piece for split into the parts it is
+     * built from ("einundfünfzig" into "einund", "fünfzig"): the parts continue, and the last
+     * takes the number's place in the line.
+     *
+     * @param line the line
+     * @return the units to look up
+     */
+    List<LineTemplate.Unit> units(LineTemplate.Line line) {
+        List<LineTemplate.Unit> out = new ArrayList<>();
+        for (LineTemplate.Unit u : line.units()) {
+            List<String> parts = library.pieceOrNear(u.text(), u.position()) != null ? null
+                    : NumberSpeller.split(u.text().replaceAll("[\\s.?!,;:]+$", ""), speller.numberParts());
+            if (parts == null || parts.size() < 2) {
+                out.add(u);
+                continue;
+            }
+            for (int k = 0; k < parts.size(); k++) {
+                out.add(new LineTemplate.Unit(parts.get(k), u.name(),
+                        k < parts.size() - 1 ? ClipLibrary.MID : u.position()));
+            }
+        }
+        return out;
+    }
+
     private static boolean fluent(ClipLibrary.Clip clip) {
         return ClipLibrary.FLUENT.equals(clip.template());
     }
@@ -388,7 +413,7 @@ public final class Narrator {
             return List.of();
         }
         List<String> out = new ArrayList<>();
-        for (LineTemplate.Unit u : line.units()) {
+        for (LineTemplate.Unit u : units(line)) {
             if (library.pieceOrNear(u.text(), u.position()) == null) {
                 out.add(u.text());
             }

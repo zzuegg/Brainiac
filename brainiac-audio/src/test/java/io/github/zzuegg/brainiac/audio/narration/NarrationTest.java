@@ -169,7 +169,7 @@ class NarrationTest {
         ClipLibrary lib = ClipLibrary.open(dir, "de");
         ToneSpeech tts = new ToneSpeech();
         ClipMaker maker = new ClipMaker(tts, new ToneHearing(tts), lib,
-                new ClipMaker.Settings(SpeechOptions.defaults(), 1, -16, 0.8, 5), null, System.out::println);
+                new ClipMaker.Settings(SpeechOptions.defaults(), 1, -16, 0.8, 5), null, null);
         maker.recordMath(0, 4, "+", "=");
         maker.record(List.of(new ClipMaker.Piece("Was ist", ClipLibrary.MID)));
         List<LineTemplate.Line> sentences = maker.fluentMath(0, 4, "Was ist", "+");
@@ -182,6 +182,32 @@ class NarrationTest {
         assertEquals("was ist drei plus eins", new ToneHearing(tts).words(q.audio()));
         assertTrue(q.clips().stream().allMatch(c -> ClipLibrary.FLUENT.equals(c.template())));
         assertEquals("eins plus zwei ist drei", new ToneHearing(tts).words(n.sayMath("1 + 2 = 3").audio()));
+    }
+
+    @Test
+    void buildsBigNumbersFromParts(@TempDir Path dir) {
+        List<String> de = DE.numberParts();
+        assertEquals(List.of("zweihundert", "einund", "fünfzig"), NumberSpeller.split(DE.cardinal(251), de));
+        assertEquals(List.of("tausend", "zweihundert", "vierund", "dreißig"), NumberSpeller.split(DE.cardinal(1234), de));
+        assertEquals(List.of("hundert", "eins"), NumberSpeller.split(DE.cardinal(101), de));
+        assertEquals(List.of("siebzehn"), NumberSpeller.split("siebzehn", de));
+        NumberSpeller en = NumberSpeller.of("en");
+        assertEquals(List.of("two hundred", "fifty", "one"), NumberSpeller.split(en.cardinal(251), en.numberParts()));
+        assertEquals(null, NumberSpeller.split("plus", de));
+
+        ClipLibrary lib = ClipLibrary.open(dir, "de");
+        ToneSpeech tts = new ToneSpeech();
+        ClipMaker maker = new ClipMaker(tts, new ToneHearing(tts), lib,
+                new ClipMaker.Settings(SpeechOptions.defaults(), 1, -16, 0.8, 5), null, null);
+        maker.record(List.of(new ClipMaker.Piece("einund", ClipLibrary.MID), new ClipMaker.Piece("zwanzig", "end."),
+                new ClipMaker.Piece("zweihundert", ClipLibrary.MID), new ClipMaker.Piece("fünfzig", "end?")));
+        lib.save();
+        Narrator n = new Narrator(ClipLibrary.open(dir), new Narrator.Settings(0.03, 1, -16, false, false));
+        assertEquals("einund zwanzig", new ToneHearing(tts).words(n.say("{n}.", Map.of("n", 21)).audio()));
+        Narrator.Spoken big = n.say("{n}?", Map.of("n", 251));
+        assertEquals(List.of("zweihundert", "einund", "fünfzig"), big.clips().stream().map(ClipLibrary.Clip::text)
+                .toList());
+        assertEquals("end?", big.clips().get(2).melody());
     }
 
     @Test

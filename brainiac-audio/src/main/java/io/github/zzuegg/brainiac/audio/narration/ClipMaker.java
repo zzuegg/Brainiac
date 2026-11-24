@@ -584,7 +584,7 @@ public final class ClipMaker {
         Map<String, float[]> guide = new LinkedHashMap<>();
         int rate = 0;
         for (LineTemplate.Line line : sentences) {
-            for (LineTemplate.Unit u : line.units()) {
+            for (LineTemplate.Unit u : parts(line)) {
                 String k = u.text() + "\u0000" + u.position();
                 if (!guide.containsKey(k)) {
                     ClipLibrary.Clip c = library.pieceOrNear(u.text(), u.position());
@@ -600,7 +600,7 @@ public final class ClipMaker {
         }
         int done = 0;
         for (LineTemplate.Line line : sentences) {
-            List<LineTemplate.Unit> units = line.units();
+            List<LineTemplate.Unit> units = parts(line);
             List<float[]> parts = new ArrayList<>();
             boolean ok = units.size() > 1;
             for (LineTemplate.Unit u : units) {
@@ -642,6 +642,61 @@ public final class ClipMaker {
         }
         library.save();
         return done;
+    }
+
+    /**
+     * A line's units with each number split into the parts it is built from
+     * ({@link NumberSpeller#numberParts()}): "einundfünfzig" becomes "einund", "fünfzig", the
+     * last taking the number's place in the line.
+     *
+     * @param line the line
+     * @return the units
+     */
+    List<LineTemplate.Unit> parts(LineTemplate.Line line) {
+        List<LineTemplate.Unit> out = new ArrayList<>();
+        for (LineTemplate.Unit u : line.units()) {
+            List<String> parts = u.name() == null ? null
+                    : NumberSpeller.split(u.text().replaceAll("[\\s.?!,;:]+$", ""), speller.numberParts());
+            if (parts == null || parts.size() < 2) {
+                out.add(u);
+                continue;
+            }
+            for (int k = 0; k < parts.size(); k++) {
+                out.add(new LineTemplate.Unit(parts.get(k), u.name(),
+                        k < parts.size() - 1 ? ClipLibrary.MID : u.position()));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * The calculations to choose fluent sentences from: all of them in a small range, and in a
+     * large one (more than 20,000) a fixed sample of 6,000, which still holds every part of
+     * every number in each place.
+     */
+    private static List<String> calculationsToRecord(int from, int to, String... operators) {
+        long size = (long) (to - from + 1) * (to - from + 1) * operators.length;
+        if (size <= 20000) {
+            return MathReader.calculations(from, to, operators);
+        }
+        java.util.Random random = new java.util.Random(1);
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (int tries = 0; out.size() < 6000 && tries < 200000; tries++) {
+            String op = operators[random.nextInt(operators.length)];
+            int a = from + random.nextInt(to - from + 1);
+            int b = from + random.nextInt(to - from + 1);
+            Integer c = switch (op) {
+                case "+" -> a + b;
+                case "-" -> a - b;
+                case "×", "*" -> a * b;
+                case "÷", "/" -> b != 0 && a % b == 0 ? a / b : null;
+                default -> throw new IllegalArgumentException("not an operator: " + op);
+            };
+            if (c != null && c >= from && c <= to) {
+                out.add(a + " " + op + " " + b + " = " + c);
+            }
+        }
+        return List.copyOf(out);
     }
 
     /**
@@ -715,7 +770,7 @@ public final class ClipMaker {
      */
     public List<LineTemplate.Line> fluentMath(int from, int to, String lead, String... operators) {
         List<LineTemplate.Line> candidates = new ArrayList<>();
-        for (String c : MathReader.calculations(from, to, operators)) {
+        for (String c : calculationsToRecord(from, to, operators)) {
             candidates.add(MathReader.read(c, speller));
             if (lead != null) {
                 String[] t = c.split(" ");
@@ -724,18 +779,23 @@ public final class ClipMaker {
             }
         }
         java.util.Set<String> wanted = new java.util.LinkedHashSet<>();
+        List<Piece> guides = new ArrayList<>();
         for (LineTemplate.Line l : candidates) {
-            for (LineTemplate.Unit u : l.units()) {
-                wanted.add(u.text() + "\u0000" + u.position());
+            for (LineTemplate.Unit u : parts(l)) {
+                if (wanted.add(u.text() + "\u0000" + u.position())) {
+                    guides.add(new Piece(u.text().replaceAll("[\\s.?!,;:]+$", ""), u.position()));
+                }
             }
         }
+        // every piece said on its own first, as a guide for cutting (skips those recorded)
+        record(guides);
         List<LineTemplate.Line> chosen = new ArrayList<>();
         while (!wanted.isEmpty()) {
             LineTemplate.Line best = null;
             int gain = 0;
             for (LineTemplate.Line l : candidates) {
                 int g = 0;
-                for (LineTemplate.Unit u : l.units()) {
+                for (LineTemplate.Unit u : parts(l)) {
                     if (wanted.contains(u.text() + "\u0000" + u.position())) {
                         g++;
                     }
@@ -749,7 +809,7 @@ public final class ClipMaker {
                 break;
             }
             chosen.add(best);
-            for (LineTemplate.Unit u : best.units()) {
+            for (LineTemplate.Unit u : parts(best)) {
                 wanted.remove(u.text() + "\u0000" + u.position());
             }
         }

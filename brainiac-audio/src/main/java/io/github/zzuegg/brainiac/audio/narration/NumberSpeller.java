@@ -201,4 +201,87 @@ public sealed interface NumberSpeller permits EnglishNumbers, GermanNumbers {
         m.appendTail(out);
         return out.toString();
     }
+
+    /**
+     * The parts that numbers up to 9,999 are built from, each said as a piece of its own: 0
+     * to 19, the tens, the hundreds and the thousands, and in German the units joined to "und"
+     * ("einund", "zweiund", …) that come before a ten, as in "einund|zwanzig".
+     *
+     * @return the parts
+     */
+    default java.util.List<String> numberParts() {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (int n = 0; n < 20; n++) {
+            out.add(cardinal(n));
+        }
+        for (int t = 20; t < 100; t += 10) {
+            out.add(cardinal(t));
+        }
+        for (int h = 100; h < 1000; h += 100) {
+            out.add(cardinal(h));
+        }
+        for (int k = 1000; k < 10000; k += 1000) {
+            out.add(cardinal(k));
+        }
+        if (language().equals("de")) {
+            for (int u = 1; u < 10; u++) {
+                out.add((u == 1 ? "ein" : cardinal(u)) + "und");
+            }
+        }
+        return java.util.List.copyOf(out);
+    }
+
+    /**
+     * Splits a spelled number into the fewest {@link #numberParts()}, such as
+     * "zweihunderteinundfünfzig" into "zweihundert", "einund", "fünfzig", or "two hundred
+     * fifty-one" into "two hundred", "fifty", "one".
+     *
+     * @param words the spelled number
+     * @param parts the parts to build it from
+     * @return the parts in order, or {@code null} if it cannot be built from them
+     */
+    static java.util.List<String> split(String words, java.util.Collection<String> parts) {
+        String t = words.toLowerCase(Locale.ROOT);
+        int n = t.length();
+        int[] count = new int[n + 1];
+        String[] via = new String[n + 1];
+        int[] from = new int[n + 1];
+        java.util.Arrays.fill(count, Integer.MAX_VALUE);
+        count[0] = 0;
+        for (int i = 0; i < n; i++) {
+            if (count[i] == Integer.MAX_VALUE) {
+                continue;
+            }
+            int at = i;
+            while (at < n && (t.charAt(at) == ' ' || t.charAt(at) == '-')) {
+                at++;
+            }
+            if (at == n && count[i] < count[n]) {
+                count[n] = count[i];
+                via[n] = null;
+                from[n] = i;
+            }
+            for (String p : parts) {
+                String q = p.toLowerCase(Locale.ROOT);
+                if (!q.isEmpty() && t.startsWith(q, at)) {
+                    int to = at + q.length();
+                    if (count[i] + 1 < count[to]) {
+                        count[to] = count[i] + 1;
+                        via[to] = p;
+                        from[to] = i;
+                    }
+                }
+            }
+        }
+        if (count[n] == Integer.MAX_VALUE) {
+            return null;
+        }
+        java.util.LinkedList<String> out = new java.util.LinkedList<>();
+        for (int at = n; at > 0; at = from[at]) {
+            if (via[at] != null) {
+                out.addFirst(via[at]);
+            }
+        }
+        return out;
+    }
 }

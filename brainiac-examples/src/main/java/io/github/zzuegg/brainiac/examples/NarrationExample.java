@@ -44,13 +44,18 @@ import java.util.stream.IntStream;
  * clip by the Base model at a low temperature. Options: {@code --language de|en},
  * {@code --device name}, {@code --takes N}, {@code --temperature T}, {@code --quick} (smaller ranges),
  * {@code --whole-math [top]} (also record whole every calculation from 0 to top, 20 by default,
- * read out and asked; about 1,300 lines for 20, and a stopped run picks up where it left off).
+ * read out and asked; about 1,300 lines for 20, and a stopped run picks up where it left off),
+ * {@code --parts [top]} (numbers up to top, 999 by default, built from parts such as
+ * zweihundert|einund|fünfzig, cut from fluent sums).
  * Writes {@code reference.wav}, {@code library-<lang>/} and {@code samples/} with a {@code report.md}.
  */
 public final class NarrationExample {
 
     private NarrationExample() {
     }
+
+    /** The largest number built from parts, 0 if none. */
+    private static int partsTop;
 
     private static final String VOICE_DE = "Eine warme, freundliche Frauenstimme, Mitte dreißig, klar und ruhig,"
             + " ein wenig langsamer als normal, wie eine Erzählerin in einem Lernspiel für Kinder.";
@@ -79,7 +84,7 @@ public final class NarrationExample {
             System.out.println("Usage: narration --base <Qwen3-TTS Base folder> --whisper <whisper folder>"
                     + " [--design <Qwen3-TTS VoiceDesign folder> | --reference ref.wav --reference-text text]"
                     + " [--out dir] [--language de|en] [--device name] [--takes N] [--temperature T] [--quick]"
-                    + " [--whole-math [top]]");
+                    + " [--whole-math [top]] [--parts [top]]");
             return;
         }
         NumberSpeller sp = NumberSpeller.of(o.getOrDefault("language", "de"));
@@ -133,6 +138,11 @@ public final class NarrationExample {
                         embedder, System.out::println);
                 maker.referenceVoice(reference);
                 prepare(maker, sp, quick);
+                if (o.containsKey("parts")) {
+                    // bigger numbers built from parts (zweihundert|einund|fünfzig), cut from fluent sums
+                    partsTop = Integer.parseInt(o.get("parts").equals("true") ? "999" : o.get("parts"));
+                    maker.fluentMath(0, partsTop, de ? "Was ist" : "What is", "+", "-");
+                }
                 if (o.containsKey("whole-math")) {
                     // every calculation up to the top, read out and asked, each as one fluent take
                     int top = Integer.parseInt(o.get("whole-math").equals("true") ? "20" : o.get("whole-math"));
@@ -296,8 +306,6 @@ public final class NarrationExample {
             boolean quick) throws IOException {
         boolean de = sp.language().equals("de");
         Narrator narrator = new Narrator(lib, Narrator.Settings.defaults());
-        // the same pieces bent to one sentence melody, to hear what it does
-        Narrator melody = new Narrator(lib, new Narrator.Settings(0.03, 0, -16, false, true));
         LineTemplate ask = LineTemplate.parse(de ? "Was ist {a} plus {b}?" : "What is {a} plus {b}?");
         List<Case> cases = new ArrayList<>();
         int[][] asks = quick ? new int[][] {{4, 6}, {2, 5}} : new int[][] {{7, 8}, {9, 4}, {6, 10}};
@@ -306,6 +314,12 @@ public final class NarrationExample {
         }
         String[] sums = quick ? new String[] {"4 + 2 = 6", "11 - 5 = 6"} : new String[] {"6 + 7 = 13", "17 - 9 = 8",
             "4 × 3 = 12", "12 ÷ 4 = 3"};
+        if (partsTop >= 300) {
+            cases.add(new Case("question", ask.render(Map.of("a", 251, "b", 21), sp)));
+            cases.add(new Case("question", ask.render(Map.of("a", 100, "b", 51), sp)));
+            sums = java.util.stream.Stream.concat(java.util.Arrays.stream(sums),
+                    java.util.stream.Stream.of("21 + 30 = 51", "200 + 51 = 251", "143 - 22 = 121")).toArray(String[]::new);
+        }
         for (String e : sums) {
             cases.add(new Case("calculation", MathReader.read(e, sp)));
         }
@@ -319,7 +333,6 @@ public final class NarrationExample {
             Map<String, Audio> made = new LinkedHashMap<>();
             made.put("words", wordByWord(maker, c.line()));
             made.put("pieces", narrator.splice(c.line()).audio());
-            made.put("pieces-melody", melody.splice(c.line()).audio());
             maker.full(c.line());
             lib.save();
             made.put("whole", narrator.say(c.line()).audio());
