@@ -96,7 +96,8 @@ public final class NarrationExample {
         System.out.println("device " + device.name() + ", " + ttsType + "; " + takes + " takes at temperature "
                 + temperature);
 
-        try (SpeechToText stt = SpeechModels.speechToText(Path.of(o.get("whisper")), device, sttType)) {
+        try (SpeechToText stt = trimming(SpeechModels.speechToText(Path.of(o.get("whisper")), device, sttType),
+                device)) {
             // 1. the voice: one reference clip, designed once
             Path refFile = o.containsKey("reference") ? Path.of(o.get("reference")) : out.resolve("reference.wav");
             String refText = o.getOrDefault("reference-text", de ? REF_DE : REF_EN);
@@ -111,10 +112,11 @@ public final class NarrationExample {
             System.out.printf("reference voice %s (%.1f s)%n", refFile, reference.seconds());
 
             // 2. the narrator: the Base model clones the reference for every line
-            try (TextToSpeech tts = SpeechModels.textToSpeech(Path.of(o.get("base")), device, ttsType)) {
+            try (TextToSpeech model = SpeechModels.textToSpeech(Path.of(o.get("base")), device, ttsType);
+                    TextToSpeech tts = trimming(model, device)) {
                 SpeechOptions options = SpeechOptions.defaults().language(sp.languageName()).seed(1000);
                 ClipMaker.VoiceEmbedder embedder = null;
-                if (tts instanceof Qwen3Speech q) {
+                if (model instanceof Qwen3Speech q) {
                     q.sampling(new Qwen3Speech.Sampling(temperature, 50, 1, 1.05f, temperature, 50, 1, 8192));
                     q.addVoice("narrator", reference, refText);
                     options = options.voice("narrator");
@@ -137,11 +139,78 @@ public final class NarrationExample {
         System.out.printf("done in %.0f s%n", (System.nanoTime() - start) / 1e9);
     }
 
+    /**
+     * The backend pools released memory by tensor size, and every line has other sizes, so a
+     * long recording session spills to system memory and runs out: give it back after each call.
+     */
+    private static TextToSpeech trimming(TextToSpeech tts, Device device) {
+        return new TextToSpeech() {
+            @Override
+            public int sampleRate() {
+                return tts.sampleRate();
+            }
+
+            @Override
+            public java.util.List<io.github.zzuegg.brainiac.audio.Voice> voices() {
+                return tts.voices();
+            }
+
+            @Override
+            public Audio synthesize(String text, SpeechOptions options, java.util.function.Consumer<Audio> onChunk) {
+                try {
+                    return tts.synthesize(text, options, onChunk);
+                } finally {
+                    device.trim();
+                }
+            }
+
+            @Override
+            public boolean canClone() {
+                return tts.canClone();
+            }
+
+            @Override
+            public void close() {
+                // the model is closed by its owner
+            }
+        };
+    }
+
+    private static SpeechToText trimming(SpeechToText stt, Device device) {
+        return new SpeechToText() {
+            @Override
+            public io.github.zzuegg.brainiac.audio.Transcription transcribe(float[] samples, TranscriptionOptions options,
+                    java.util.function.Consumer<io.github.zzuegg.brainiac.audio.Transcription.Segment> onSegment) {
+                try {
+                    return stt.transcribe(samples, options, onSegment);
+                } finally {
+                    device.trim();
+                }
+            }
+
+            @Override
+            public java.util.List<String> languages() {
+                return stt.languages();
+            }
+
+            @Override
+            public boolean canTranslate() {
+                return stt.canTranslate();
+            }
+
+            @Override
+            public void close() {
+                stt.close();
+            }
+        };
+    }
+
     /** Designs the narrator's voice: a few takes of the reference text, the clearest one kept. */
     private static void design(Path dir, Device device, DType type, SpeechToText stt, NumberSpeller sp,
             String description, String text, Path file) {
         System.out.println("designing the voice: " + description);
-        try (TextToSpeech tts = SpeechModels.textToSpeech(dir, device, type)) {
+        try (TextToSpeech model = SpeechModels.textToSpeech(dir, device, type)) {
+            TextToSpeech tts = trimming(model, device);
             Audio best = null;
             double bestScore = -1;
             for (int seed = 0; seed < 4; seed++) {
