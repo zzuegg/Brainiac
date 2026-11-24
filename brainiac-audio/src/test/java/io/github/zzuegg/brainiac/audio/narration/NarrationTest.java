@@ -149,15 +149,19 @@ class NarrationTest {
         assertEquals(250 + 150 * 0.055 / 0.5, hz[5], 6);
         assertEquals(250 + 150 * (hz.length - 5.5) / 100 / 0.5, hz[hz.length - 6], 10);
         // inside a line the rise is taken out: lowered more at the end than at the start
-        double[] mid = Narrator.melody(glide, rate, 300, 0, 0.3, false);
+        double[] mid = Narrator.melody(glide, rate, 300, 0, 0.3, null);
         assertTrue(mid[mid.length - 6] < mid[5] * 0.8, mid[5] + " " + mid[mid.length - 6]);
         float[] bent = Prosody.reshape(glide, rate, 1, mid);
         assertEquals(glide.length, bent.length, 2);
         double[] after = Prosody.pitch(bent, rate);
         assertTrue(after[after.length - 6] - after[5] < 60, after[5] + " " + after[after.length - 6]);
         // the last word keeps its own movement, only moved
-        double[] last = Narrator.melody(glide, rate, 300, 0.7, 1, true);
+        double[] last = Narrator.melody(glide, rate, 300, 0.7, 1, "end.");
         assertEquals(last[5], last[last.length - 6], 0.02);
+        // a question's last word is never lifted, so its rise stays in reach
+        for (double f : Narrator.melody(glide, rate, 400, 0.7, 1, "end?")) {
+            assertTrue(f <= 1.0001, "lifted " + f);
+        }
     }
 
     @Test

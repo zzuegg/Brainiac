@@ -81,8 +81,8 @@ public final class Narrator {
     /** How much of a word's own pitch movement is kept, once its rise or fall is taken out. */
     static final double ACCENT = 0.5;
     /** The most a piece's pitch is moved, in semitones. */
-    static final double MAX_SHIFT = 6;
-    /** Literal words (operators, "was ist") are said lighter: quieter and quicker. */
+    static final double MAX_SHIFT = 4;
+    /** Literal words inside a line (operators, "ist") are said lighter: quieter and quicker. */
     static final double LIGHT_GAIN = 0.75;
     static final double LIGHT_SPEED = 1.08;
 
@@ -197,7 +197,7 @@ public final class Narrator {
         double total0 = 0;
         for (int i = 0; i < count; i++) {
             raw[i] = AudioTools.trim(library.audio(used.get(i)).resample(rate).samples(), rate, 0.01);
-            speeds[i] = tempo * (light(units.get(i), count) ? LIGHT_SPEED : 1);
+            speeds[i] = tempo * (light(units.get(i), i, count) ? LIGHT_SPEED : 1);
             total0 += raw[i].length / speeds[i] + gap;
         }
         double lineSeconds = Math.max(1e-3, (total0 - gap) / rate);
@@ -208,15 +208,15 @@ public final class Narrator {
         for (int i = 0; i < count; i++) {
             double[] ratio = Double.isNaN(ref) ? null
                     : melody(raw[i], rate, ref, t / lineSeconds, (t + raw[i].length / speeds[i] / rate) / lineSeconds,
-                            i == count - 1);
+                            i == count - 1 ? units.get(i).position() : null);
             float[] p = ratio == null ? AudioTools.stretch(raw[i], rate, speeds[i])
                     : Prosody.reshape(raw[i], rate, speeds[i], ratio);
-            if (light(units.get(i), count)) {
+            if (light(units.get(i), i, count)) {
                 for (int k = 0; k < p.length; k++) {
                     p[k] *= (float) LIGHT_GAIN;
                 }
             }
-            AudioTools.fade(p, rate, 0.008, 0.008);
+            AudioTools.fade(p, rate, 0.004, 0.008);
             parts.add(p);
             total += p.length + gap;
             t += (p.length + gap) / (double) rate;
@@ -243,10 +243,11 @@ public final class Narrator {
      * @param refHz the voice's middle pitch
      * @param from where the piece starts in the line, 0 to 1
      * @param to where it ends
-     * @param last whether it ends the line
+     * @param ending for the last piece of a line its ending ({@code end.}, {@code end?},
+     *     {@code end!}), otherwise {@code null}
      * @return a factor per 10 ms frame, or {@code null} to leave it as it is
      */
-    static double[] melody(float[] x, int rate, double refHz, double from, double to, boolean last) {
+    static double[] melody(float[] x, int rate, double refHz, double from, double to, String ending) {
         double[] hz = Prosody.pitch(x, rate);
         double[] c = Prosody.contour(hz, refHz);
         if (c == null) {
@@ -254,7 +255,7 @@ public final class Narrator {
         }
         int n = c.length;
         double[] want = new double[n];
-        if (last) {
+        if (ending != null) {
             double sum = 0;
             int k = 0;
             for (int i = 0; i < n && k < 5; i++) {
@@ -264,7 +265,11 @@ public final class Narrator {
                 }
             }
             double start = sum / k;
-            double shift = clamp(MELODY_TOP + (MELODY_LOW - MELODY_TOP) * from - start);
+            double shift = MELODY_TOP + (MELODY_LOW - MELODY_TOP) * from - start;
+            // a question's last word starts low and rises: never lift it, or its rise goes out of
+            // reach and it stops sounding like a question; a statement's is lifted at most 2
+            shift = ending.endsWith("?") ? Math.min(0, shift) : Math.min(2, shift);
+            shift = clamp(shift);
             for (int i = 0; i < n; i++) {
                 want[i] = c[i] + shift;
             }
@@ -300,8 +305,9 @@ public final class Narrator {
         return ratio;
     }
 
-    private boolean light(LineTemplate.Unit unit, int count) {
-        return settings.melody() && unit.name() == null && count > 1;
+    private boolean light(LineTemplate.Unit unit, int index, int count) {
+        // the first words carry the line's onset and, in a question, its question word
+        return settings.melody() && unit.name() == null && index > 0 && index < count - 1;
     }
 
     private static double clamp(double semitones) {
