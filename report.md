@@ -4,15 +4,15 @@
 |---|---|---|---|---|---|
 | 01 | Was ist sieben plus acht? | words | 2.28 s | Was ist 7 plus 8? | 1.00 |
 | 01 | Was ist sieben plus acht? | pieces-plain | 1.59 s | Was ist 7 plus 8? | 1.00 |
-| 01 | Was ist sieben plus acht? | pieces | 1.45 s | Das ist 7 plus 8. | 0.95 |
+| 01 | Was ist sieben plus acht? | pieces | 1.48 s | Das ist 7 plus 8. | 0.95 |
 | 01 | Was ist sieben plus acht? | whole | 1.53 s | Was ist 7 plus 8? | 1.00 |
 | 02 | Was ist neun plus vier? | words | 2.10 s | Was ist 9 plus 4? | 1.00 |
 | 02 | Was ist neun plus vier? | pieces-plain | 1.60 s | Was ist 9 plus 4? | 1.00 |
-| 02 | Was ist neun plus vier? | pieces | 1.45 s | Das ist 9 plus 4. | 0.94 |
+| 02 | Was ist neun plus vier? | pieces | 1.48 s | Was ist 9 plus 4? | 1.00 |
 | 02 | Was ist neun plus vier? | whole | 1.59 s | Was ist 9 plus 4? | 1.00 |
 | 03 | Was ist sechs plus zehn? | words | 2.13 s | Was ist 6 plus 10? | 1.00 |
 | 03 | Was ist sechs plus zehn? | pieces-plain | 1.61 s | Was ist 6 plus 10? | 1.00 |
-| 03 | Was ist sechs plus zehn? | pieces | 1.47 s | Das ist 6 plus 10. | 0.95 |
+| 03 | Was ist sechs plus zehn? | pieces | 1.50 s | Was ist 6 plus 10? | 1.00 |
 | 03 | Was ist sechs plus zehn? | whole | 1.91 s | Was ist 6 plus 10? | 1.00 |
 | 04 | sechs plus sieben ist dreizehn | words | 2.88 s | 6 plus 7 ist 13. | 1.00 |
 | 04 | sechs plus sieben ist dreizehn | pieces-plain | 2.17 s | 6 plus 7 ist 13. | 1.00 |
