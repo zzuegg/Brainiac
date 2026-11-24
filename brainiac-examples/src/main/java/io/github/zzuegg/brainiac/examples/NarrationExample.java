@@ -267,6 +267,8 @@ public final class NarrationExample {
         int top = quick ? 6 : 10;
         // every calculation up to the top: numbers once per melody, operators once
         maker.recordMath(0, 2 * top, "+", "-", "×", "÷", "=");
+        // then the same pieces again, cut out of fluent calculations and questions
+        maker.fluentMath(0, 2 * top, de ? "Was ist" : "What is", "+", "-", "×", "÷");
         // a question with two numbers: 100 lines, so put together from pieces
         LineTemplate ask = LineTemplate.parse(de ? "Was ist {a} plus {b}?" : "What is {a} plus {b}?");
         Map<String, List<?>> d = new LinkedHashMap<>();
