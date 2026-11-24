@@ -1,219 +1,127 @@
-﻿start 2026-11-24T17:27:13.1744751+01:00
+﻿start 2026-11-24T18:01:10.8694085+01:00
 Picked up JAVA_TOOL_OPTIONS: -Dbrainiac.vulkan.memory=10000
-Calculating task graph as no cached configuration is available for tasks: :brainiac-examples:run --args=narration --base D:\_Programming\Brainiac-models-large\Qwen3-TTS-12Hz-1.7B-Base --whisper D:\_Programming\Brainiac-models-large\whisper-large-v3 --design D:\_Programming\Brainiac-models-large\Qwen3-TTS-12Hz-1.7B-VoiceDesign --out D:\_Programming\Brainiac-models-large\narration-check --language de --takes 3 --reference D:\_Programming\Brainiac-models-large\narration-check\reference.wav
-> Task :build-logic:checkKotlinCompilerVersion
-> Task :build-logic:checkKotlinGradlePluginConfigurationErrors SKIPPED
-> Task :build-logic:generateExternalPluginSpecBuilders UP-TO-DATE
-> Task :build-logic:extractPrecompiledScriptPluginPlugins UP-TO-DATE
-> Task :build-logic:compilePluginsBlocks UP-TO-DATE
-> Task :build-logic:generatePrecompiledScriptPluginAccessors UP-TO-DATE
-> Task :build-logic:generateScriptPluginAdapters UP-TO-DATE
-
-> Task :build-logic:compileKotlin UP-TO-DATE
-Kotlin does not yet support 27 JDK target, falling back to Kotlin JVM_26 JVM target
-
-> Task :build-logic:compileJava NO-SOURCE
-> Task :build-logic:pluginDescriptors UP-TO-DATE
-> Task :build-logic:processResources UP-TO-DATE
-> Task :build-logic:classes UP-TO-DATE
-> Task :build-logic:jar UP-TO-DATE
-
-> Configure project :brainiac
-Kotlin does not yet support 27 JDK target, falling back to Kotlin JVM_26 JVM target
-
-> Task :brainiac:processResources NO-SOURCE
+Reusing configuration cache.
+> Task :brainiac-llm:processResources NO-SOURCE
+> Task :brainiac-rl:processResources NO-SOURCE
+> Task :brainiac-evolve:processResources NO-SOURCE
 > Task :brainiac-diffusion:processResources NO-SOURCE
+> Task :brainiac-tensor:processResources NO-SOURCE
 > Task :brainiac-data:processResources NO-SOURCE
 > Task :brainiac-examples:processResources NO-SOURCE
-> Task :brainiac-autograd:processResources NO-SOURCE
-> Task :brainiac-evolve:processResources NO-SOURCE
-> Task :brainiac-llm:processResources NO-SOURCE
-> Task :brainiac-train:processResources NO-SOURCE
-> Task :brainiac-tensor:processResources NO-SOURCE
 > Task :brainiac-nn:processResources NO-SOURCE
-> Task :brainiac-rl:processResources NO-SOURCE
+> Task :brainiac:processResources NO-SOURCE
+> Task :brainiac-autograd:processResources NO-SOURCE
+> Task :brainiac-train:processResources NO-SOURCE
 > Task :brainiac-audio:processResources UP-TO-DATE
 > Task :brainiac-backend-hip:processResources UP-TO-DATE
-> Task :brainiac-backend-cpu:processResources UP-TO-DATE
-> Task :brainiac-io:processResources UP-TO-DATE
 > Task :brainiac-backend-cuda:processResources UP-TO-DATE
+> Task :brainiac-io:processResources UP-TO-DATE
+> Task :brainiac-backend-cpu:processResources UP-TO-DATE
 > Task :brainiac-tensor:compileJava UP-TO-DATE
 > Task :brainiac-tensor:classes UP-TO-DATE
 > Task :brainiac-backend-vulkan:processResources UP-TO-DATE
 > Task :brainiac-tensor:jar UP-TO-DATE
-> Task :brainiac-data:compileJava UP-TO-DATE
-> Task :brainiac-backend-cuda:compileJava UP-TO-DATE
-> Task :brainiac-data:classes UP-TO-DATE
 > Task :brainiac-backend-hip:compileJava UP-TO-DATE
+> Task :brainiac-backend-cpu:compileJava UP-TO-DATE
+> Task :brainiac-data:compileJava UP-TO-DATE
 > Task :brainiac-autograd:compileJava UP-TO-DATE
+> Task :brainiac-backend-cuda:compileJava UP-TO-DATE
 > Task :brainiac-backend-vulkan:compileJava UP-TO-DATE
 > Task :brainiac-backend-hip:classes UP-TO-DATE
+> Task :brainiac-backend-vulkan:classes UP-TO-DATE
+> Task :brainiac-data:classes UP-TO-DATE
 > Task :brainiac-autograd:classes UP-TO-DATE
 > Task :brainiac-backend-cuda:classes UP-TO-DATE
-> Task :brainiac-backend-cpu:compileJava UP-TO-DATE
-> Task :brainiac-backend-vulkan:classes UP-TO-DATE
 > Task :brainiac-backend-cpu:classes UP-TO-DATE
-> Task :brainiac-data:jar UP-TO-DATE
-> Task :brainiac-backend-cuda:jar UP-TO-DATE
-> Task :brainiac-autograd:jar UP-TO-DATE
-> Task :brainiac-backend-hip:jar UP-TO-DATE
 > Task :brainiac-backend-cpu:jar UP-TO-DATE
+> Task :brainiac-backend-cuda:jar UP-TO-DATE
+> Task :brainiac-backend-hip:jar UP-TO-DATE
 > Task :brainiac-backend-vulkan:jar UP-TO-DATE
+> Task :brainiac-autograd:jar UP-TO-DATE
+> Task :brainiac-data:jar UP-TO-DATE
 > Task :brainiac-io:compileJava UP-TO-DATE
-> Task :brainiac-io:classes UP-TO-DATE
 > Task :brainiac-nn:compileJava UP-TO-DATE
-> Task :brainiac-io:jar UP-TO-DATE
 > Task :brainiac-nn:classes UP-TO-DATE
+> Task :brainiac-io:classes UP-TO-DATE
 > Task :brainiac-nn:jar UP-TO-DATE
+> Task :brainiac-io:jar UP-TO-DATE
+> Task :brainiac-llm:compileJava UP-TO-DATE
 > Task :brainiac-diffusion:compileJava UP-TO-DATE
 > Task :brainiac-train:compileJava UP-TO-DATE
-> Task :brainiac-llm:compileJava UP-TO-DATE
 > Task :brainiac-diffusion:classes UP-TO-DATE
-> Task :brainiac-train:classes UP-TO-DATE
 > Task :brainiac-llm:classes UP-TO-DATE
+> Task :brainiac-train:classes UP-TO-DATE
 > Task :brainiac-diffusion:jar UP-TO-DATE
-> Task :brainiac-llm:jar UP-TO-DATE
 > Task :brainiac-train:jar UP-TO-DATE
+> Task :brainiac-llm:jar UP-TO-DATE
 > Task :brainiac-evolve:compileJava UP-TO-DATE
 > Task :brainiac-evolve:classes UP-TO-DATE
 > Task :brainiac-rl:compileJava UP-TO-DATE
-> Task :brainiac-audio:compileJava UP-TO-DATE
 > Task :brainiac-rl:classes UP-TO-DATE
-> Task :brainiac-audio:classes UP-TO-DATE
+> Task :brainiac-audio:compileJava UP-TO-DATE
 > Task :brainiac-evolve:jar UP-TO-DATE
 > Task :brainiac-rl:jar UP-TO-DATE
+> Task :brainiac-audio:classes UP-TO-DATE
 > Task :brainiac-audio:jar
 > Task :brainiac:compileJava
 > Task :brainiac:classes
 > Task :brainiac:jar UP-TO-DATE
 > Task :brainiac-examples:compileJava
 > Task :brainiac-examples:classes
-> Task :brainiac-examples:jar
+> Task :brainiac-examples:jar UP-TO-DATE
 
 > Task :brainiac-examples:run
 Picked up JAVA_TOOL_OPTIONS: -Dbrainiac.vulkan.memory=10000
 WARNING: Using incubator modules: jdk.incubator.vector
 device vulkan (AMD Radeon RX 9070 XT), BFLOAT16; 3 takes at temperature 0.6
 reference voice D:\_Programming\Brainiac-models-large\narration-check\reference.wav (9.8 s)
-  Plus, minus, mal, geteilt durch, null.                       asr 1.00 voice 0.99 
-  Ist, null, eins, zwei, eins.                                 asr 1.00 voice 0.98 
-  Drei, vier, f�nf, sechs, zwei.                               asr 1.00 voice 0.99 
-  Sieben, acht, neun, zehn, drei.                              asr 1.00 voice 0.99 
-  Elf, zw�lf, dreizehn, vierzehn, vier.                        asr 1.00 voice 0.99 
-  F�nfzehn, sechzehn, siebzehn, achtzehn, f�nf.                asr 1.00 voice 0.99 
-  Neunzehn, zwanzig, sechs.                                    asr 1.00 voice 0.99 
-  Sieben.                                                      asr 1.00 voice 0.96 
-  Acht.                                                        asr 1.00 voice 0.94 
-  Neun.                                                        asr 1.00 voice 0.96 
-  Zehn.                                                        asr 1.00 voice 0.96 
-  Elf.                                                         asr 1.00 voice 0.96 
-  Zw�lf.                                                       asr 1.00 voice 0.96 
-  Dreizehn.                                                    asr 1.00 voice 0.98 
-  Vierzehn.                                                    asr 1.00 voice 0.98 
-  F�nfzehn.                                                    asr 1.00 voice 0.98 
-  Sechzehn.                                                    asr 1.00 voice 0.98 
-  Siebzehn.                                                    asr 1.00 voice 0.97 
-  Achtzehn.                                                    asr 1.00 voice 0.97 
-  Neunzehn.                                                    asr 1.00 voice 0.98 
-  Zwanzig.                                                     asr 1.00 voice 0.98 
-  Null?                                                        asr 1.00 voice 0.95 
-  Eins?                                                        asr 1.00 voice 0.96 
-  Zwei?                                                        asr 1.00 voice 0.97 
-  Drei?                                                        asr 1.00 voice 0.96 
-  Vier?                                                        asr 1.00 voice 0.96 
-  F�nf?                                                        asr 1.00 voice 0.96 
-  Sechs?                                                       asr 1.00 voice 0.96 
-  Sieben?                                                      asr 1.00 voice 0.96 
-  Acht?                                                        asr 1.00 voice 0.93 
-  Neun?                                                        asr 1.00 voice 0.96 
-  Zehn?                                                        asr 1.00 voice 0.96 
-  Elf?                                                         asr 1.00 voice 0.96 
-  Zw�lf?                                                       asr 1.00 voice 0.96 
-  Dreizehn?                                                    asr 1.00 voice 0.98 
-  Vierzehn?                                                    asr 1.00 voice 0.97 
-  F�nfzehn?                                                    asr 1.00 voice 0.97 
-  Sechzehn?                                                    asr 1.00 voice 0.98 
-  Siebzehn?                                                    asr 1.00 voice 0.97 
-  Achtzehn?                                                    asr 1.00 voice 0.97 
-  Neunzehn?                                                    asr 1.00 voice 0.97 
-  Zwanzig?                                                     asr 1.00 voice 0.98 
 Was ist {a} plus {b}?: 100 lines
-  Was ist, f�nf?                                               asr 1.00 voice 0.98 
-  Eins?                                                        asr 1.00 voice 0.96 
-  Zwei?                                                        asr 1.00 voice 0.97 
-  Drei?                                                        asr 1.00 voice 0.96 
-  Vier?                                                        asr 1.00 voice 0.96 
-  Sechs?                                                       asr 1.00 voice 0.96 
-  Sieben?                                                      asr 1.00 voice 0.96 
-  Acht?                                                        asr 1.00 voice 0.93 
-  Neun?                                                        asr 1.00 voice 0.96 
-  Zehn?                                                        asr 1.00 voice 0.96 
 {n0} plus {n1} ist {n2}: 1900 lines
 Du bist auf dem {n:ordinal:en} Platz!: 8 lines
-  Du bist auf dem ersten Platz!                                asr 1.00 voice 0.99 
-  Du bist auf dem zweiten Platz!                               asr 1.00 voice 0.99 
-  Du bist auf dem dritten Platz!                               asr 1.00 voice 0.98 
-  Du bist auf dem vierten Platz!                               asr 1.00 voice 0.98 
-  Du bist auf dem f�nften Platz!                               asr 1.00 voice 0.99 
-  Du bist auf dem sechsten Platz!                              asr 1.00 voice 0.98 
-  Du bist auf dem siebten Platz!                               asr 1.00 voice 0.98 
-  Du bist auf dem achten Platz!                                asr 1.00 voice 0.98 
 Noch {n:cardinal:eine} {n|Runde|Runden}!: 5 lines
-  Noch eine Runde!                                             asr 1.00 voice 0.98 
-  Noch zwei Runden!                                            asr 1.00 voice 0.98 
-  Noch drei Runden!                                            asr 1.00 voice 0.98 
-  Noch vier Runden!                                            asr 1.00 voice 0.98 
-  Noch f�nf Runden!                                            asr 1.00 voice 0.98 
-library ready: 92 clips (751 s so far)
+library ready: 99 clips (5 s so far)
   Was ist                                                      asr 1.00 voice 0.96 
   sieben                                                       asr 1.00 voice 0.96 
   plus                                                         asr 1.00 voice 0.95 
   acht?                                                        asr 1.00 voice 0.96 
-  Was ist sieben plus acht?                                    asr 1.00 voice 0.98 
 sample 01: Was ist sieben plus acht?
   Was ist                                                      asr 1.00 voice 0.96 
   neun                                                         asr 1.00 voice 0.97 
   plus                                                         asr 1.00 voice 0.95 
   vier?                                                        asr 1.00 voice 0.96 
-  Was ist neun plus vier?                                      asr 1.00 voice 0.98 
 sample 02: Was ist neun plus vier?
   Was ist                                                      asr 1.00 voice 0.96 
   sechs                                                        asr 1.00 voice 0.96 
   plus                                                         asr 1.00 voice 0.95 
   zehn?                                                        asr 1.00 voice 0.97 
-  Was ist sechs plus zehn?                                     asr 1.00 voice 0.99 
 sample 03: Was ist sechs plus zehn?
   sechs                                                        asr 1.00 voice 0.96 
   plus                                                         asr 1.00 voice 0.95 
   sieben                                                       asr 1.00 voice 0.96 
   ist                                                          asr 1.00 voice 0.96 
   dreizehn                                                     asr 1.00 voice 0.98 
-  sechs plus sieben ist dreizehn                               asr 1.00 voice 0.99 
 sample 04: sechs plus sieben ist dreizehn
   siebzehn                                                     asr 1.00 voice 0.97 
   minus                                                        asr 1.00 voice 0.97 
   neun                                                         asr 1.00 voice 0.97 
   ist                                                          asr 1.00 voice 0.96 
   acht                                                         asr 1.00 voice 0.93 
-  siebzehn minus neun ist acht                                 asr 1.00 voice 0.98 
 sample 05: siebzehn minus neun ist acht
   vier                                                         asr 1.00 voice 0.95 
   mal                                                          asr 1.00 voice 0.96 
   drei                                                         asr 1.00 voice 0.97 
   ist                                                          asr 1.00 voice 0.96 
   zw�lf                                                        asr 1.00 voice 0.96 
-  vier mal drei ist zw�lf                                      asr 1.00 voice 0.99 
 sample 06: vier mal drei ist zw�lf
   zw�lf                                                        asr 1.00 voice 0.96 
   geteilt durch                                                asr 1.00 voice 0.98 
   vier                                                         asr 1.00 voice 0.95 
   ist                                                          asr 1.00 voice 0.96 
   drei                                                         asr 1.00 voice 0.97 
-  zw�lf geteilt durch vier ist drei                            asr 1.00 voice 0.98 
 sample 07: zw�lf geteilt durch vier ist drei
-done in 1222 s
+done in 395 s
 
-BUILD SUCCESSFUL in 20m 32s
-51 actionable tasks: 6 executed, 45 up-to-date
-Configuration cache entry stored.
-exit 0 elapsed 00:20:32.8795834 end 2026-11-24T17:47:46.0290184+01:00
+BUILD SUCCESSFUL in 6m 37s
+41 actionable tasks: 4 executed, 37 up-to-date
+Configuration cache entry reused.
+exit 0 elapsed 00:06:37.4742167 end 2026-11-24T18:07:48.3193077+01:00
