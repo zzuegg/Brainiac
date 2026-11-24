@@ -30,8 +30,9 @@ import java.util.stream.IntStream;
 
 /**
  * Builds a narrator's number library with Qwen3-TTS and compares three ways of saying lines
- * with numbers in them: pieces spoken alone and joined (as the narrator lines of the kids'
- * games were cut), pieces cut from takes of the same template and spliced, and whole lines.
+ * with numbers in them: words spoken alone and joined (as the narrator lines of the kids'
+ * games were cut), shared pieces (each number once per melody, each operator once, cut from
+ * comma carriers at real pauses) put together at the speaker's own pauses, and whole lines.
  *
  * <pre>
  * ./gradlew :brainiac-examples:run --args="narration --base models/Qwen3-TTS-12Hz-1.7B-Base
@@ -132,7 +133,7 @@ public final class NarrationExample {
                 System.out.printf("library ready: %d clips (%.0f s so far)%n", lib.clips().size(),
                         (System.nanoTime() - start) / 1e9);
 
-                // 3. compare: pieces said alone, spliced from the template, and whole
+                // 3. compare: words said alone, shared pieces, and whole lines
                 compare(maker, lib, stt, sp, out.resolve("samples"), quick);
             }
         }
@@ -255,7 +256,9 @@ public final class NarrationExample {
     private static void prepare(ClipMaker maker, NumberSpeller sp, boolean quick) {
         boolean de = sp.language().equals("de");
         int top = quick ? 6 : 10;
-        // a question with two numbers: 100 lines, so spliced
+        // every calculation up to the top: numbers once per melody, operators once
+        maker.recordMath(0, 2 * top, "+", "-", "×", "÷", "=");
+        // a question with two numbers: 100 lines, so put together from pieces
         LineTemplate ask = LineTemplate.parse(de ? "Was ist {a} plus {b}?" : "What is {a} plus {b}?");
         Map<String, List<?>> d = new LinkedHashMap<>();
         d.put("a", range(1, top));
@@ -288,12 +291,12 @@ public final class NarrationExample {
         for (int[] p : asks) {
             cases.add(new Case("question", ask.render(Map.of("a", p[0], "b", p[1]), sp)));
         }
-        String[] sums = quick ? new String[] {"4 + 2 = 6", "5 + 6 = 11"} : new String[] {"6 + 7 = 13", "9 + 8 = 17",
-            "4 + 10 = 14"};
+        String[] sums = quick ? new String[] {"4 + 2 = 6", "11 - 5 = 6"} : new String[] {"6 + 7 = 13", "17 - 9 = 8",
+            "4 × 3 = 12", "12 ÷ 4 = 3"};
         for (String e : sums) {
             cases.add(new Case("calculation", MathReader.read(e, sp)));
         }
-        StringBuilder report = new StringBuilder("# Spliced vs whole lines\n\n| # | line | how | length | heard | match |\n"
+        StringBuilder report = new StringBuilder("# Words vs pieces vs whole lines\n\n| # | line | how | length | heard | match |\n"
                 + "|---|---|---|---|---|---|\n");
         TranscriptionOptions to = TranscriptionOptions.defaults().language(sp.language());
         int n = 0;
@@ -302,7 +305,7 @@ public final class NarrationExample {
             String id = String.format("%02d", n);
             Map<String, Audio> made = new LinkedHashMap<>();
             made.put("words", wordByWord(maker, c.line()));
-            made.put("spliced", narrator.splice(c.line()).audio());
+            made.put("pieces", narrator.splice(c.line()).audio());
             maker.full(c.line());
             lib.save();
             made.put("whole", narrator.say(c.line()).audio());

@@ -23,12 +23,10 @@ import java.util.function.Consumer;
  * best and whose voice is closest to the reference. Then either
  * <ul>
  * <li>{@link #full}: the take is the line, or
- * <li>{@link #splice}: the template is spoken with example values (the frame) and once more
- *     per value of each name, all whole lines. Between each two values a join point is
- *     chosen inside the words between them (in "Was ist {a} <b>plus</b> {b}?", inside
- *     "plus") where the takes, aligned by dynamic time warping, sound most alike. A {@link
- *     Narrator} switches takes only there, so no word is ever cut at its edge and each number
- *     keeps the melody of its place.
+ * <li>{@link #record}: pieces (a number, an operator, a phrase), each with the melody of its
+ *     place, are said in short chains with commas ("sieben, plus, acht, ist, fünfzehn.") and
+ *     cut out at the pauses. Every template and calculation shares them, and a {@link
+ *     Narrator} joins them with natural pauses.
  * </ul>
  * {@link #prepare} picks between them by how many lines the template can make.
  */
@@ -214,8 +212,8 @@ public final class ClipMaker {
         Take t = takes(text).get(0);
         Audio a = new Audio(AudioTools.trim(t.audio().samples(), t.audio().sampleRate(), 0.05),
                 t.audio().sampleRate());
-        return library.put(new ClipLibrary.Clip(ClipLibrary.FULL, line.template(), text, List.of(), new int[0], false,
-                "", t.asr(), t.voice()), a);
+        return library.put(new ClipLibrary.Clip(ClipLibrary.FULL, line.template(), text, "line", "", t.asr(),
+                t.voice()), a);
     }
 
     /**
@@ -231,298 +229,224 @@ public final class ClipMaker {
         library.save();
     }
 
-    // ---------------------------------------------------------------- splicing
-
-    /** Takes recorded before join points are chosen, so the choice sees how the takes differ. */
-    static final int JOIN_SAMPLE = 8;
+    // ---------------------------------------------------------------- pieces
 
     /**
-     * The units of a line that say values.
+     * A piece to record: words said with one melody.
      *
-     * @param units the units
-     * @return their indices, in order
+     * @param text the words
+     * @param melody {@link ClipLibrary#MID}, {@code end.}, {@code end?} or {@code end!}
      */
-    static int[] slots(List<LineTemplate.Unit> units) {
-        return java.util.stream.IntStream.range(0, units.size()).filter(i -> units.get(i).name() != null).toArray();
+    public record Piece(String text, String melody) {
     }
 
-    private static List<String> texts(LineTemplate.Line line) {
-        return line.units().stream().map(LineTemplate.Unit::text).toList();
+    /** Pieces said before the last one in a carrier (its other pieces continue the melody). */
+    static final int CHAIN = 4;
+
+    /**
+     * The pieces a line is said with: its units, each with the melody of its place.
+     *
+     * @param line the line
+     * @return its pieces, in order
+     */
+    public static List<Piece> pieces(LineTemplate.Line line) {
+        List<Piece> out = new ArrayList<>();
+        for (LineTemplate.Unit u : line.units()) {
+            out.add(new Piece(u.text(), u.position()));
+        }
+        return out;
     }
 
     /**
-     * Records a template for splicing. The frame (the template with the example values) and
-     * a take for each value of each name are spoken whole. Between each two values a join
-     * point is chosen inside the words between them, where the frame and the takes, aligned
-     * by dynamic time warping, sound most alike and the sound is steady; every take gets the
-     * join points mapped onto it. A spliced line then switches takes only inside a word all
-     * of them say, never at the edge of a number.
+     * Records pieces that the library does not have yet. They are said in carriers: short
+     * chains such as "sieben, plus, acht, ist, fünfzehn." where the commas make the speaker
+     * pause, so each piece keeps the melody of its place (continuing inside the chain, falling
+     * or rising at its end) and is cut out of real silence, never out of running speech. A
+     * take counts only if recognition hears the whole chain and the pauses split it into
+     * exactly its pieces; chains that do not split are said again in smaller chains.
      *
-     * @param template the template
-     * @param example a value for every name: the frame's
-     * @param domains the values to record for each name
+     * @param wanted the pieces
      */
-    public void splice(LineTemplate template, Map<String, ?> example, Map<String, ? extends List<?>> domains) {
-        String src = template.source();
-        LineTemplate.Line frameLine = template.render(example, speller);
-        List<LineTemplate.Unit> frameUnits = frameLine.units();
-        int[] slots = slots(frameUnits);
-        if (slots.length < 2) {
-            // one value: every take is a whole line already
-            List<Map<String, Object>> all = new ArrayList<>();
-            for (Map.Entry<String, ? extends List<?>> d : domains.entrySet()) {
-                for (Object v : d.getValue()) {
-                    Map<String, Object> values = new LinkedHashMap<>(example);
-                    values.put(d.getKey(), v);
-                    all.add(values);
-                }
+    public void record(java.util.Collection<Piece> wanted) {
+        List<Piece> mids = new ArrayList<>();
+        Map<String, List<Piece>> ends = new LinkedHashMap<>();
+        java.util.Set<Piece> seen = new java.util.HashSet<>();
+        for (Piece p : wanted) {
+            if (!seen.add(p) || library.piece(p.text(), p.melody()) != null) {
+                continue;
             }
-            full(template, all);
-            return;
-        }
-        List<LineTemplate.Line> lines = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        seen.add(frameLine.text());
-        for (Map.Entry<String, ? extends List<?>> d : domains.entrySet()) {
-            for (Object v : d.getValue()) {
-                Map<String, Object> values = new LinkedHashMap<>(example);
-                values.put(d.getKey(), v);
-                LineTemplate.Line line = template.render(values, speller);
-                if (line.units().size() != frameUnits.size()) {
-                    log.accept("  skipped " + line.text() + ": its pieces differ from the frame's");
-                } else if (seen.add(line.text()) && library.take(src, line.text()) == null) {
-                    lines.add(line);
-                }
+            if (p.melody().equals(ClipLibrary.MID)) {
+                mids.add(p);
+            } else {
+                ends.computeIfAbsent(p.melody(), k -> new ArrayList<>()).add(p);
             }
         }
-        ClipLibrary.Clip frame = library.take(src, frameLine.text());
-        int first = 0;
-        if (frame == null) {
-            List<Take> sample = new ArrayList<>();
-            for (; first < Math.min(JOIN_SAMPLE, lines.size()); first++) {
-                sample.add(takes(lines.get(first).text()).get(0));
-            }
-            Take ft = null;
-            Cut cut = null;
-            for (Take t : takes(frameLine.text())) {
-                Cut c = cutByRecognition(t.audio(), frameUnits);
-                if (cut == null || c.score() > cut.score()) {
-                    ft = t;
-                    cut = c;
+        List<List<Piece>> chains = new ArrayList<>();
+        java.util.ArrayDeque<Piece> midQueue = new java.util.ArrayDeque<>(mids);
+        for (List<Piece> group : ends.values()) {
+            for (Piece end : group) {
+                List<Piece> chain = new ArrayList<>();
+                while (chain.size() < CHAIN && !midQueue.isEmpty()) {
+                    chain.add(midQueue.poll());
                 }
-                if (c.score() >= settings.minAsr()) {
-                    break;
-                }
+                chain.add(end);
+                chains.add(chain);
             }
-            log.accept(String.format("  frame of %s cut with match %.2f", src, cut.score()));
-            List<Audio> others = sample.stream().map(Take::audio).toList();
-            int[] joins = chooseJoins(ft.audio(), cut.frames(), slots, others);
-            frame = library.put(new ClipLibrary.Clip(ClipLibrary.TAKE, src, frameLine.text(), texts(frameLine), joins,
-                    true, "", ft.asr(), ft.voice()), ft.audio());
-            for (int i = 0; i < sample.size(); i++) {
-                storeTake(src, frame, lines.get(i), sample.get(i));
-            }
-            library.save();
         }
-        for (int i = first; i < lines.size(); i++) {
-            storeTake(src, frame, lines.get(i), takes(lines.get(i).text()).get(0));
-            if (i % 10 == 9) {
+        while (!midQueue.isEmpty()) {
+            // more continuing pieces than endings: end the chain on a piece said falling, kept as a bonus
+            List<Piece> chain = new ArrayList<>();
+            while (chain.size() < CHAIN && !midQueue.isEmpty()) {
+                chain.add(midQueue.poll());
+            }
+            chain.add(new Piece(chain.get(chain.size() - 1).text(), "end."));
+            chains.add(chain);
+        }
+        int done = 0;
+        for (List<Piece> chain : chains) {
+            recordChain(chain);
+            if (++done % 5 == 0) {
                 library.save();
             }
         }
         library.save();
     }
 
-    private void storeTake(String template, ClipLibrary.Clip frame, LineTemplate.Line line, Take t) {
-        int[] joins = mapJoins(library.audio(frame), frame.joins(), t.audio());
-        library.put(new ClipLibrary.Clip(ClipLibrary.TAKE, template, line.text(), texts(line), joins, false, "",
-                t.asr(), t.voice()), t.audio());
+    /** The text a chain is said as: its pieces between commas, ending on the last one's mark. */
+    static String carrier(List<Piece> chain) {
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < chain.size(); i++) {
+            String t = chain.get(i).text().replaceAll("[.!?,:;]+$", "");
+            if (i == 0 && !t.isEmpty()) {
+                t = Character.toUpperCase(t.charAt(0)) + t.substring(1);
+            }
+            b.append(t);
+            b.append(i < chain.size() - 1 ? ", " : chain.get(i).melody().substring(3));
+        }
+        return b.toString();
+    }
+
+    private void recordChain(List<Piece> chain) {
+        String text = carrier(chain);
+        for (Take t : takes(text)) {
+            if (t.asr() < settings.minAsr()) {
+                break;   // ranked: no later take matches either
+            }
+            List<float[]> parts = splitAtPauses(t.audio(), chain);
+            if (parts != null) {
+                for (int i = 0; i < chain.size(); i++) {
+                    Piece p = chain.get(i);
+                    {
+                        library.put(new ClipLibrary.Clip(ClipLibrary.PIECE, "", p.text(), p.melody(), "", t.asr(),
+                                t.voice()), new Audio(parts.get(i), t.audio().sampleRate()));
+                    }
+                }
+                library.pause(pauses(t.audio(), chain.size()));
+                return;
+            }
+        }
+        if (chain.size() == 1) {
+            log.accept("  ! could not record " + chain.get(0).text() + " (" + chain.get(0).melody() + ")");
+            return;
+        }
+        log.accept("  pauses did not split \"" + text + "\"; saying it in smaller chains");
+        int half = chain.size() / 2;
+        List<Piece> left = new ArrayList<>(chain.subList(0, half));
+        List<Piece> right = new ArrayList<>(chain.subList(half, chain.size()));
+        if (!left.isEmpty()) {
+            Piece last = left.get(left.size() - 1);
+            if (last.melody().equals(ClipLibrary.MID) && left.size() > 1) {
+                recordChain(left);
+            } else {
+                for (Piece p : left) {
+                    recordChain(List.of(p, new Piece(p.text(), "end.")));
+                }
+            }
+        }
+        recordChain(right);
     }
 
     /**
-     * Chooses the join points on the frame: for each two neighbouring values, the 10 ms frame
-     * inside the words between them (away from their edges) where the other takes, aligned
-     * to the frame, differ least from it and the sound changes least. Values with no words
-     * between them join at the cut between them.
+     * Splits a take at its pauses: the {@code n - 1} longest silences of at least 40 ms
+     * inside the speech, if the pieces between them have lengths that fit their words.
      *
-     * @param frame the frame
-     * @param cuts the frame's unit boundaries, in envelope frames
-     * @param slots the units that say values
-     * @param others other takes of the template
-     * @return a sample of the frame per join
+     * @param take the take
+     * @param chain the pieces it says
+     * @return each piece's samples, with 30 ms of the pause on each side, or {@code null}
      */
-    int[] chooseJoins(Audio frame, int[] cuts, int[] slots, List<Audio> others) {
-        int rate = frame.sampleRate();
-        int hop = rate / AudioTools.FRAME_RATE;
-        float[][] mf = AudioTools.logMel(frame.samples(), rate);
-        List<float[][]> mels = new ArrayList<>();
-        List<int[]> maps = new ArrayList<>();
-        for (Audio o : others) {
-            float[][] mo = AudioTools.logMel(o.resample(rate).samples(), rate);
-            mels.add(mo);
-            maps.add(AudioTools.warp(mf, mo));
-        }
-        int[] joins = new int[slots.length - 1];
-        for (int b = 0; b < joins.length; b++) {
-            int from = cuts[slots[b]];            // where the words after value b start
-            int to = cuts[slots[b + 1] - 1];      // where value b + 1 starts
-            if (to - from < 3) {
-                joins[b] = Math.min(mf.length - 1, from) * hop;
-                continue;
-            }
-            int margin = Math.max(1, (int) Math.round(0.2 * (to - from)));
-            int best = (from + to) / 2;
-            double bestCost = Double.POSITIVE_INFINITY;
-            for (int t = from + margin; t <= to - margin && t < mf.length - 1; t++) {
-                double cost = 0.5 * AudioTools.distance(mf[t - 1], mf[t + 1]);
-                for (int k = 0; k < mels.size(); k++) {
-                    float[][] mo = mels.get(k);
-                    cost += AudioTools.distance(mf[t], mo[maps.get(k)[t]]) / mels.size();
-                }
-                if (cost < bestCost) {
-                    bestCost = cost;
-                    best = t;
-                }
-            }
-            joins[b] = best * hop;
-        }
-        return joins;
-    }
-
-    /**
-     * Maps the frame's join points onto another take through the warping path, then moves
-     * each up to 30 ms to where the take sounds most like the frame there.
-     *
-     * @param frame the frame
-     * @param joins the frame's join points, in samples
-     * @param take another take
-     * @return the take's join points, in samples
-     */
-    static int[] mapJoins(Audio frame, int[] joins, Audio take) {
+    static List<float[]> splitAtPauses(Audio take, List<Piece> chain) {
+        float[] x = take.samples();
         int rate = take.sampleRate();
         int hop = rate / AudioTools.FRAME_RATE;
-        float[][] mf = AudioTools.logMel(frame.resample(rate).samples(), rate);
-        float[][] mt = AudioTools.logMel(take.samples(), rate);
-        int[] map = AudioTools.warp(mf, mt);
-        int[] out = new int[joins.length];
-        for (int b = 0; b < joins.length; b++) {
-            int jf = Math.min(mf.length - 1, joins[b] / hop);
-            int center = map[jf];
-            int best = center;
-            double bestCost = Double.POSITIVE_INFINITY;
-            for (int t = Math.max(1, center - 3); t <= Math.min(mt.length - 2, center + 3); t++) {
-                double cost = AudioTools.distance(mf[jf], mt[t]) + 0.1 * Math.abs(t - center);
-                if (cost < bestCost) {
-                    bestCost = cost;
-                    best = t;
-                }
-            }
-            out[b] = best * hop;
+        double[] env = AudioTools.envelope(x, rate);
+        int[] sp = AudioTools.speech(env);
+        List<int[]> runs = AudioTools.silences(env, sp[0], sp[1], 4);
+        int n = chain.size();
+        if (runs.size() < n - 1) {
+            return null;
         }
-        // keep them in order
-        for (int b = 1; b < out.length; b++) {
-            out[b] = Math.max(out[b], out[b - 1] + hop);
+        runs.sort(Comparator.comparingInt((int[] r) -> r[1] - r[0]).reversed());
+        List<int[]> cuts = new ArrayList<>(runs.subList(0, n - 1));
+        cuts.sort(Comparator.comparingInt(r -> r[0]));
+        // a fourth of the shortest kept pause must still beat every pause left over, or the split is a guess
+        int[] from = new int[n];
+        int[] to = new int[n];
+        from[0] = sp[0];
+        for (int i = 0; i < n - 1; i++) {
+            to[i] = cuts.get(i)[0];
+            from[i + 1] = cuts.get(i)[1];
+        }
+        to[n - 1] = sp[1] + 1;
+        double lo = Double.POSITIVE_INFINITY;
+        double hi = 0;
+        for (int i = 0; i < n; i++) {
+            int letters = Math.max(2, chain.get(i).text().replaceAll("[^\\p{L}\\d]", "").length());
+            double perLetter = (double) (to[i] - from[i]) / letters;
+            if (to[i] - from[i] < 10) {
+                return null;   // under 100 ms: not a word
+            }
+            lo = Math.min(lo, perLetter);
+            hi = Math.max(hi, perLetter);
+        }
+        if (hi > 4 * lo) {
+            return null;
+        }
+        int margin = 3;
+        List<float[]> out = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            int a = Math.max(0, (from[i] - margin) * hop);
+            int b = Math.min(x.length, (to[i] + margin) * hop);
+            float[] piece = java.util.Arrays.copyOfRange(x, a, b);
+            AudioTools.fade(piece, rate, 0.01, 0.01);
+            out.add(piece);
         }
         return out;
     }
 
-    /**
-     * Where a take was cut.
-     *
-     * @param frames the envelope frame of each boundary between units
-     * @param score the lowest recognition match of the checked pieces
-     */
-    record Cut(int[] frames, double score) {
-    }
-
-    /** The words of units {@code from} to {@code to - 1}, normalized. */
-    private String words(List<LineTemplate.Unit> units, int from, int to) {
-        StringBuilder b = new StringBuilder();
-        for (int i = from; i < to; i++) {
-            b.append(units.get(i).text()).append(' ');
-        }
-        return AudioTools.normalize(b.toString(), speller);
-    }
-
-    /**
-     * How well a cut at {@code frame} splits a take after unit {@code b}: recognition of the
-     * audio before it against the units up to {@code b}, and of the audio after it against
-     * the rest, the lower of the two. Whole stretches are heard far more reliably than one
-     * short word on its own. Only the side at the cut counts: recognition often finishes a
-     * stretch cut short with words that are not there, which says nothing about the cut.
-     */
-    private double boundary(float[] x, int rate, int frames, List<LineTemplate.Unit> units, int b, int frame) {
-        double before = AudioTools.prefixSimilarity(words(units, 0, b + 1),
-                AudioTools.normalize(hear(AudioTools.slice(x, rate, 0, frame), rate), speller));
-        if (before < 0.5) {
-            return before;
-        }
-        double after = AudioTools.suffixSimilarity(words(units, b + 1, units.size()),
-                AudioTools.normalize(hear(AudioTools.slice(x, rate, frame, frames), rate), speller));
-        return Math.min(before, after);
-    }
-
-    /**
-     * Cuts a take into its units: each boundary at a quiet dip, tried nearest the place the
-     * letters predict first, until recognition hears the right words on both sides of it.
-     */
-    Cut cutByRecognition(Audio take, List<LineTemplate.Unit> units) {
-        float[] x = take.samples();
-        int rate = take.sampleRate();
-        double[] env = AudioTools.envelope(x, rate);
+    /** The lengths of the pauses a take was split at, in seconds. */
+    private static List<Double> pauses(Audio take, int n) {
+        double[] env = AudioTools.envelope(take.samples(), take.sampleRate());
         int[] sp = AudioTools.speech(env);
-        List<AudioTools.Valley> valleys = AudioTools.valleys(env);
-        int k = units.size();
-        int[] cuts = new int[Math.max(0, k - 1)];
-        double[] weight = new double[k];
-        double total = 0;
-        for (int i = 0; i < k; i++) {
-            weight[i] = Math.max(2, AudioTools.normalize(units.get(i).text(), speller).length());
-            total += weight[i];
+        List<int[]> runs = AudioTools.silences(env, sp[0], sp[1], 4);
+        runs.sort(Comparator.comparingInt((int[] r) -> r[1] - r[0]).reversed());
+        List<Double> out = new ArrayList<>();
+        for (int i = 0; i < Math.min(n - 1, runs.size()); i++) {
+            out.add((runs.get(i)[1] - runs.get(i)[0]) / (double) AudioTools.FRAME_RATE);
         }
-        double score = 1;
-        int prev = 0;
-        double acc = 0;
-        for (int b = 0; b < k - 1; b++) {
-            acc += weight[b];
-            double expected = sp[0] + (sp[1] - sp[0]) * acc / total;
-            int lo = Math.max(prev, sp[0]) + 5;
-            int hi = sp[1] - 5;
-            List<AudioTools.Valley> cand = new ArrayList<>();
-            for (AudioTools.Valley v : valleys) {
-                if (v.frame() > lo && v.frame() < hi) {
-                    cand.add(v);
-                }
-            }
-            cand.sort(Comparator.comparingDouble(v -> Math.abs(v.frame() - expected) - 0.5 * v.depth()));
-            int best = (int) Math.round(expected);
-            double bestSim = -1;
-            for (int c = 0; c < Math.min(6, cand.size()); c++) {
-                int f = cand.get(c).frame();
-                double sim = boundary(x, rate, env.length, units, b, f);
-                if (sim > bestSim) {
-                    bestSim = sim;
-                    best = f;
-                }
-                if (sim >= 0.9) {
-                    break;
-                }
-            }
-            cuts[b] = best;
-            score = Math.min(score, Math.max(0, bestSim));
-            prev = best;
-        }
-        return new Cut(cuts, score);
+        return out;
     }
 
     // ---------------------------------------------------------------- choosing
 
     /**
      * Records a template the best affordable way: every line whole if there are at most
-     * {@link Settings#fullBudget()} of them, otherwise pieces for splicing.
+     * {@link Settings#fullBudget()} of them, otherwise the pieces its lines are put together
+     * from. Pieces are shared: "acht" said continuing is the same piece in "Was ist acht plus
+     * zwei?" and in "acht mal drei ist vierundzwanzig", so a new wording only adds its own
+     * words.
      *
      * @param template the template
-     * @param example a value for every name (the frame, when splicing)
+     * @param example a value for every name
      * @param domains the values each name takes
      * @return {@link Narrator.Mode#FULL} or {@link Narrator.Mode#SPLICED}
      */
@@ -537,8 +461,48 @@ public final class ClipMaker {
             full(template, product(example, domains));
             return Narrator.Mode.FULL;
         }
-        splice(template, example, domains);
+        List<Piece> wanted = new ArrayList<>(pieces(template.render(example, speller)));
+        for (Map.Entry<String, ? extends List<?>> d : domains.entrySet()) {
+            for (Object v : d.getValue()) {
+                Map<String, Object> values = new LinkedHashMap<>(example);
+                values.put(d.getKey(), v);
+                LineTemplate.Line line = template.render(values, speller);
+                List<LineTemplate.Unit> units = line.units();
+                for (LineTemplate.Unit u : units) {
+                    if (d.getKey().equals(u.name())) {
+                        wanted.add(new Piece(u.text(), u.position()));
+                    }
+                }
+            }
+        }
+        record(wanted);
         return Narrator.Mode.SPLICED;
+    }
+
+    /**
+     * Records what calculations need: the numbers {@code from} to {@code to} with each melody
+     * (continuing, ending a statement, ending a question) and the words of the operators,
+     * so {@link Narrator#sayMath} can read any sum of them.
+     *
+     * @param from the smallest number
+     * @param to the largest number
+     * @param operators the symbols, such as {@code "+", "-", "×", "÷", "="}
+     */
+    public void recordMath(int from, int to, String... operators) {
+        List<Piece> wanted = new ArrayList<>();
+        for (String op : operators) {
+            String w = speller.operator(op);
+            if (w != null) {
+                wanted.add(new Piece(w, ClipLibrary.MID));
+            }
+        }
+        for (int n = from; n <= to; n++) {
+            String w = speller.cardinal(n);
+            wanted.add(new Piece(w, ClipLibrary.MID));
+            wanted.add(new Piece(w, "end."));
+            wanted.add(new Piece(w, "end?"));
+        }
+        record(wanted);
     }
 
     /**

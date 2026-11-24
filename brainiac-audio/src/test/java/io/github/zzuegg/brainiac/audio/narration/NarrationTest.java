@@ -119,37 +119,6 @@ class NarrationTest {
     }
 
     @Test
-    void cutChecksIgnoreWordsBeyondTheCut() {
-        assertEquals(1.0, AudioTools.prefixSimilarity("wasist", "wasistdas"), 1e-9);
-        assertEquals(1.0, AudioTools.suffixSimilarity("plusacht", "sprechtplusacht"), 1e-9);
-        assertTrue(AudioTools.prefixSimilarity("wasistdrei", "wasist") < 0.7);
-        assertTrue(AudioTools.suffixSimilarity("siebenplus", "benplus") < 0.8);
-    }
-
-    @Test
-    void joinsLineUpWaveforms() {
-        // two takes of the same vowel, out of phase and at other levels: the join must not jump
-        int rate = 24000;
-        float[] a = new float[rate];
-        float[] b = new float[rate];
-        for (int i = 0; i < rate; i++) {
-            a[i] = (float) (0.5 * Math.sin(2 * Math.PI * 200 * i / rate));
-            b[i] = (float) (0.3 * Math.sin(2 * Math.PI * 200 * i / rate + 2.0));
-        }
-        float[] x = AudioTools.splice(List.of(new AudioTools.Segment(a, 0, 12000),
-                new AudioTools.Segment(b, 9000, rate)), rate, 0.025, 0.008);
-        float jump = 0;
-        for (int i = 1; i < x.length; i++) {
-            jump = Math.max(jump, Math.abs(x[i] - x[i - 1]));
-        }
-        // a 200 Hz sine of 0.5 moves at most 0.5 * 2 pi * 200 / 24000 = 0.026 a sample
-        assertTrue(jump < 0.03, "jump " + jump);
-        // the level is matched at the join, then eases back to the second take's own
-        assertEquals(0.5, AudioTools.rms(x, 12100, 600) * Math.sqrt(2), 0.06);
-        assertEquals(0.3, AudioTools.rms(x, x.length - 1000, 600) * Math.sqrt(2), 0.03);
-    }
-
-    @Test
     void loudnessNormalizes() {
         int rate = 24000;
         float[] x = new float[rate * 2];
@@ -168,7 +137,22 @@ class NarrationTest {
     }
 
     @Test
-    void splicesAndPrefersWholeLines(@TempDir Path dir) {
+    void carriersSayPiecesWithTheirMelody() {
+        List<ClipMaker.Piece> chain = List.of(new ClipMaker.Piece("sieben", "mid"), new ClipMaker.Piece("plus", "mid"),
+                new ClipMaker.Piece("acht?", "end?"));
+        assertEquals("Sieben, plus, acht?", ClipMaker.carrier(chain));
+        ToneSpeech tts = new ToneSpeech();
+        Audio take = tts.synthesize(ClipMaker.carrier(chain), SpeechOptions.defaults(), null);
+        List<float[]> parts = ClipMaker.splitAtPauses(take, chain);
+        assertEquals(3, parts.size());
+        assertEquals("plus", new ToneHearing(tts).words(new Audio(parts.get(1), ToneSpeech.RATE)));
+        // a chain whose pauses do not split it into its pieces is not cut at a guess
+        assertEquals(null, ClipMaker.splitAtPauses(tts.synthesize("Sieben plus acht?", SpeechOptions.defaults(), null),
+                chain));
+    }
+
+    @Test
+    void putsLinesTogetherFromSharedPieces(@TempDir Path dir) {
         ClipLibrary lib = ClipLibrary.open(dir, "de");
         ToneSpeech tts = new ToneSpeech();
         ClipMaker maker = new ClipMaker(tts, new ToneHearing(tts), lib,
@@ -179,25 +163,28 @@ class NarrationTest {
         domains.put("a", range);
         domains.put("b", range);
         assertEquals(Narrator.Mode.SPLICED, maker.prepare(t, Map.of("a", 3, "b", 5), domains));
+        maker.recordMath(0, 6, "+", "=");
         maker.full(t.render(Map.of("a", 2, "b", 6), DE));
         lib.save();
+        assertTrue(lib.pauseSeconds() > 0.1);
 
         Narrator n = Narrator.open(dir);
-        Narrator.Spoken spliced = n.say(t.source(), Map.of("a", 4, "b", 2));
-        assertEquals(Narrator.Mode.SPLICED, spliced.mode());
-        assertEquals("Was ist vier plus zwei?", spliced.text());
-        // the spliced audio says the right words, in order
-        assertEquals("was ist vier plus zwei", new ToneHearing(tts).words(spliced.audio()));
-        assertEquals(2, spliced.clips().size());   // one join, inside "plus"
-        // a line one take already says needs no join
-        assertEquals(1, n.say(t.source(), Map.of("a", 4, "b", 5)).clips().size());
+        Narrator.Spoken spoken = n.say(t.source(), Map.of("a", 4, "b", 2));
+        assertEquals(Narrator.Mode.SPLICED, spoken.mode());
+        assertEquals("was ist vier plus zwei", new ToneHearing(tts).words(spoken.audio()));
+        assertEquals(List.of("mid", "mid", "mid", "end?"), spoken.clips().stream().map(ClipLibrary.Clip::melody)
+                .toList());
+        // a calculation shares the numbers and operators, whatever its wording
+        Narrator.Spoken sum = n.sayMath("2 + 3 = 5");
+        assertEquals("zwei plus drei ist fünf", new ToneHearing(tts).words(sum.audio()));
+        assertEquals("end.", sum.clips().get(4).melody());
         assertEquals(Narrator.Mode.FULL, n.say(t.source(), Map.of("a", 2, "b", 6)).mode());
         assertEquals(List.of("neun?"), n.missing(t.render(Map.of("a", 1, "b", 9), DE)));
         assertThrows(IllegalStateException.class, () -> n.say(t.source(), Map.of("a", 1, "b", 9)));
 
+        LineTemplate laps = LineTemplate.parse("Noch {n:cardinal:eine} {n|Runde|Runden}!");
         ClipMaker small = new ClipMaker(tts, new ToneHearing(tts), lib,
                 new ClipMaker.Settings(SpeechOptions.defaults(), 1, -16, 0.8, 5), null, null);
-        LineTemplate laps = LineTemplate.parse("Noch {n:cardinal:eine} {n|Runde|Runden}!");
         assertEquals(Narrator.Mode.FULL, small.prepare(laps, Map.of("n", 1), Map.of("n", List.of(1, 2, 3))));
         assertEquals(Narrator.Mode.FULL, Narrator.open(dir).say(laps.source(), Map.of("n", 1)).mode());
     }
@@ -245,14 +232,18 @@ class NarrationTest {
             for (int k = 0; k < 2000; k++) {
                 out.add(0f);
             }
-            for (String w : words(text)) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("([\\p{L}\\d]+)([^\\p{L}\\d]*)")
+                    .matcher(text.toLowerCase(java.util.Locale.ROOT));
+            while (m.find()) {
+                String w = m.group(1);
                 double f = pitch(w);
                 int len = (int) (RATE * (0.06 + 0.04 * w.length()) * (0.95 + 0.1 * r.nextDouble()));
                 for (int i = 0; i < len; i++) {
                     double env = Math.sin(Math.PI * i / len);
                     out.add((float) (0.3 * Math.sqrt(env) * Math.sin(2 * Math.PI * f * i / RATE)));
                 }
-                for (int k = 0; k < 500; k++) {
+                int gap = m.group(2).matches(".*[,.?!].*") ? 3200 : 500;   // a pause at a comma
+                for (int k = 0; k < gap; k++) {
                     out.add(0.002f * (float) r.nextGaussian());
                 }
             }

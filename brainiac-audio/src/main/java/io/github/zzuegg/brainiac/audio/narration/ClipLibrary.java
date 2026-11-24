@@ -20,63 +20,40 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * A narrator's recorded speech on disk: whole lines, and takes of templates to splice lines
- * from. A folder holds {@code index.json} and a WAV file per clip; {@link ClipMaker} fills it
- * ahead of time, and a game reads it with a {@link Narrator}, which needs no speech model.
- *
- * <p>A take of a template is a whole spoken line with its <em>join points</em>: one between
- * each two values, placed inside the words between them, where every take of the template
- * says the same sound. A spliced line switches from one take to another only there.
+ * A narrator's recorded speech on disk: whole lines, and pieces (numbers, operators,
+ * phrases) to put lines together from, each with the melody of its place in a line. A folder
+ * holds {@code index.json} and a WAV file per clip; {@link ClipMaker} fills it ahead of time,
+ * and a game reads it with a {@link Narrator}, which needs no speech model.
  */
 public final class ClipLibrary {
 
     /** A whole line, spoken in one go. */
     public static final String FULL = "full";
-    /** A take of a template, with join points, for splicing. */
-    public static final String TAKE = "take";
+    /** A piece of a line, said with one melody, cut out at pauses. */
+    public static final String PIECE = "piece";
+    /** The melody of a piece inside a line: continuing. */
+    public static final String MID = "mid";
 
     /**
      * A recorded clip.
      *
-     * @param kind {@link #FULL} or {@link #TAKE}
-     * @param template the template it was spoken from, or the empty string
-     * @param text the whole line, as spelled
-     * @param units for a take, the words of each {@linkplain LineTemplate.Unit unit} of its line
-     * @param joins for a take, the sample of each join point (one fewer than the values in the line)
-     * @param frame whether this take is the template's frame, the one join points were chosen on
+     * @param kind {@link #FULL} or {@link #PIECE}
+     * @param template the template a whole line was spoken from, or the empty string
+     * @param text the words, as spelled
+     * @param melody for a piece, {@link #MID}, {@code end.}, {@code end?} or {@code end!}; for a line, {@code line}
      * @param file the WAV file, relative to the library folder
      * @param asr how closely speech recognition matched the words, 0 to 1
      * @param voice how close the voice is to the reference, -1 to 1
      */
-    public record Clip(String kind, String template, String text, List<String> units, int[] joins, boolean frame,
-            String file, double asr, double voice) {
-
-        /**
-         * Copies the lists.
-         *
-         * @param kind the kind
-         * @param template the template
-         * @param text the line
-         * @param units the units' words
-         * @param joins the join points
-         * @param frame whether it is the frame
-         * @param file the file
-         * @param asr the recognition match
-         * @param voice the voice match
-         */
-        public Clip {
-            units = List.copyOf(units);
-            joins = joins.clone();
-        }
+    public record Clip(String kind, String template, String text, String melody, String file, double asr,
+            double voice) {
 
         Map<String, Object> json() {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("kind", kind);
             m.put("template", template);
             m.put("text", text);
-            m.put("units", new ArrayList<Object>(units));
-            m.put("joins", joins);
-            m.put("frame", frame);
+            m.put("melody", melody);
             m.put("file", file);
             m.put("asr", asr);
             m.put("voice", voice);
@@ -88,6 +65,7 @@ public final class ClipLibrary {
     private final String language;
     private final Map<String, Clip> clips = new LinkedHashMap<>();
     private final Map<String, Audio> loaded = new ConcurrentHashMap<>();
+    private final List<Double> pauses = new ArrayList<>();
 
     private ClipLibrary(Path dir, String language) {
         this.dir = dir;
@@ -113,20 +91,14 @@ public final class ClipLibrary {
             ClipLibrary lib = new ClipLibrary(dir, Json.string(root, "language", language));
             for (Object o : Json.array(root.get("clips"))) {
                 Map<String, Object> c = Json.object(o);
-                List<String> units = new ArrayList<>();
-                if (c.get("units") != null) {
-                    for (Object u : Json.array(c.get("units"))) {
-                        units.add((String) u);
-                    }
-                }
-                List<Object> j = c.get("joins") == null ? List.of() : Json.array(c.get("joins"));
-                int[] joins = new int[j.size()];
-                for (int i = 0; i < joins.length; i++) {
-                    joins[i] = ((Number) j.get(i)).intValue();
-                }
                 lib.index(new Clip(Json.string(c, "kind", FULL), Json.string(c, "template", ""),
-                        Json.string(c, "text", ""), units, joins, Boolean.TRUE.equals(c.get("frame")),
-                        Json.string(c, "file", ""), Json.number(c, "asr", 0), Json.number(c, "voice", 0)));
+                        Json.string(c, "text", ""), Json.string(c, "melody", "line"), Json.string(c, "file", ""),
+                        Json.number(c, "asr", 0), Json.number(c, "voice", 0)));
+            }
+            if (root.get("pauses") != null) {
+                for (Object v : Json.array(root.get("pauses"))) {
+                    lib.pauses.add(((Number) v).doubleValue());
+                }
             }
             return lib;
         } catch (IOException e) {
@@ -177,7 +149,8 @@ public final class ClipLibrary {
     }
 
     private static String key(Clip c) {
-        return c.kind() + "\u0000" + c.template() + "\u0000" + c.text();
+        return c.kind().equals(FULL) ? FULL + "\u0000" + c.text() : PIECE + "\u0000" + c.text() + "\u0000"
+                + c.melody();
     }
 
     private void index(Clip c) {
@@ -191,8 +164,38 @@ public final class ClipLibrary {
      * @return the clip, or {@code null}
      */
     public synchronized Clip full(String text) {
-        for (Clip c : clips.values()) {
-            if (c.kind().equals(FULL) && c.text().equals(text)) {
+        return clips.get(FULL + "\u0000" + text);
+    }
+
+    /**
+     * A piece said with a melody.
+     *
+     * @param text the words
+     * @param melody the melody
+     * @return the clip, or {@code null}
+     */
+    public synchronized Clip piece(String text, String melody) {
+        return clips.get(PIECE + "\u0000" + text + "\u0000" + melody);
+    }
+
+    /**
+     * A piece, or failing that the same words with the nearest melody: an ending with another
+     * mark, then any ending, then continuing.
+     *
+     * @param text the words
+     * @param melody the melody wanted
+     * @return the clip, or {@code null} if the words were never recorded
+     */
+    public synchronized Clip pieceOrNear(String text, String melody) {
+        List<String> order = new ArrayList<>(List.of(melody));
+        if (melody.startsWith("end")) {
+            order.addAll(List.of("end.", "end!", "end?", MID));
+        } else {
+            order.addAll(List.of("end.", "end!", "end?"));
+        }
+        for (String m : order) {
+            Clip c = piece(text, m);
+            if (c != null) {
                 return c;
             }
         }
@@ -200,34 +203,26 @@ public final class ClipLibrary {
     }
 
     /**
-     * The takes of a template.
+     * Notes pauses measured between pieces in carriers.
      *
-     * @param template the template's source
-     * @return its takes, the frame first
+     * @param seconds their lengths
      */
-    public synchronized List<Clip> takes(String template) {
-        List<Clip> out = new ArrayList<>();
-        for (Clip c : clips.values()) {
-            if (c.kind().equals(TAKE) && c.template().equals(template)) {
-                if (c.frame()) {
-                    out.add(0, c);
-                } else {
-                    out.add(c);
-                }
-            }
-        }
-        return out;
+    public synchronized void pause(List<Double> seconds) {
+        pauses.addAll(seconds);
     }
 
     /**
-     * A template's take of a line.
+     * The median pause between pieces in the carriers, the speaker's own.
      *
-     * @param template the template's source
-     * @param text the spelled line
-     * @return the take, or {@code null}
+     * @return seconds, 0.18 if none was measured
      */
-    public synchronized Clip take(String template, String text) {
-        return clips.get(TAKE + "\u0000" + template + "\u0000" + text);
+    public synchronized double pauseSeconds() {
+        if (pauses.isEmpty()) {
+            return 0.18;
+        }
+        List<Double> sorted = new ArrayList<>(pauses);
+        sorted.sort(null);
+        return sorted.get(sorted.size() / 2);
     }
 
     /**
@@ -250,8 +245,8 @@ public final class ClipLibrary {
     public synchronized Clip put(Clip clip, Audio audio) {
         Objects.requireNonNull(audio, "audio");
         String file = "clips/" + clip.kind() + "-" + hash(key(clip)) + ".wav";
-        Clip stored = new Clip(clip.kind(), clip.template(), clip.text(), clip.units(), clip.joins(), clip.frame(),
-                file, clip.asr(), clip.voice());
+        Clip stored = new Clip(clip.kind(), clip.template(), clip.text(), clip.melody(), file, clip.asr(),
+                clip.voice());
         try {
             Files.createDirectories(dir.resolve("clips"));
         } catch (IOException e) {
@@ -275,6 +270,7 @@ public final class ClipLibrary {
         }
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("language", language);
+        root.put("pauses", new ArrayList<Object>(pauses));
         root.put("clips", list);
         try {
             Files.createDirectories(dir);
