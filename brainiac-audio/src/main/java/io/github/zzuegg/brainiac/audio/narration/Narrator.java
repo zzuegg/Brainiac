@@ -59,13 +59,13 @@ public final class Narrator {
         public static final double DEFAULT_SPEED = 1.2;
 
         /**
-         * The defaults: 30 ms gaps, the pace of whole lines, -16 LUFS, whole lines first, one
-         * sentence melody.
+         * The defaults: 30 ms gaps, the pace of whole lines, -16 LUFS, whole lines first, pieces
+         * as recorded (no sentence melody).
          *
          * @return the settings
          */
         public static Settings defaults() {
-            return new Settings(0.03, 0, -16, true, true);
+            return new Settings(0.03, 0, -16, true, false);
         }
     }
 
@@ -81,7 +81,7 @@ public final class Narrator {
     /** How much of a word's own pitch movement is kept, once its rise or fall is taken out. */
     static final double ACCENT = 0.5;
     /** The most a piece's pitch is moved, in semitones. */
-    static final double MAX_SHIFT = 4;
+    static final double MAX_SHIFT = 3;
     /** Literal words inside a line (operators, "ist") are said lighter: quieter and quicker. */
     static final double LIGHT_GAIN = 0.75;
     static final double LIGHT_SPEED = 1.08;
@@ -209,8 +209,8 @@ public final class Narrator {
             double[] ratio = Double.isNaN(ref) ? null
                     : melody(raw[i], rate, ref, t / lineSeconds, (t + raw[i].length / speeds[i] / rate) / lineSeconds,
                             i == count - 1 ? units.get(i).position() : null);
-            float[] p = ratio == null ? AudioTools.stretch(raw[i], rate, speeds[i])
-                    : Prosody.reshape(raw[i], rate, speeds[i], ratio);
+            float[] p = ratio == null ? Prosody.psola(raw[i], rate, speeds[i], null)
+                    : Prosody.psola(raw[i], rate, speeds[i], ratio);
             if (light(units.get(i), i, count)) {
                 for (int k = 0; k < p.length; k++) {
                     p[k] *= (float) LIGHT_GAIN;

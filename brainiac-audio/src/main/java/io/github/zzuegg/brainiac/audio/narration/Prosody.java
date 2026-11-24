@@ -146,6 +146,93 @@ final class Prosody {
     }
 
     /**
+     * Changes tempo and pitch over time without moving the voice's resonances (TD-PSOLA): voiced
+     * stretches are cut into two-period grains centred on each glottal pulse, and the grains are
+     * laid down again at the new period, so the pitch changes while each grain keeps the shape
+     * of the vocal tract; unvoiced stretches are overlap-added in 5 ms grains at the new tempo.
+     *
+     * @param x the samples
+     * @param rate the sample rate
+     * @param speed how much faster, such as 1.2
+     * @param ratio the pitch factor for each 10 ms frame of the input, or {@code null} for none
+     * @return the samples, about {@code x.length / speed} long
+     */
+    static float[] psola(float[] x, int rate, double speed, double[] ratio) {
+        if (x.length == 0 || ratio == null && Math.abs(speed - 1) < 1e-3) {
+            return x.clone();
+        }
+        int hop = rate / AudioTools.FRAME_RATE;
+        double[] hz = pitch(x, rate);
+        // analysis marks: one per glottal pulse where voiced, every 5 ms elsewhere
+        java.util.List<int[]> marks = new java.util.ArrayList<>();   // {position, period, voiced}
+        int unv = Math.max(1, rate / 200);
+        int t = 0;
+        while (t < x.length) {
+            int f = Math.min(hz.length - 1, t / hop);
+            if (hz[f] > 0) {
+                int period = (int) Math.round(rate / hz[f]);
+                // the strongest positive peak, near where the next pulse is due (a whole period
+                // to look in at the start of a voiced stretch), so the marks keep one polarity
+                boolean continuing = !marks.isEmpty() && marks.get(marks.size() - 1)[2] == 1;
+                int reach = continuing ? period / 4 : period / 2;
+                int from = Math.max(0, t - reach);
+                int to = Math.min(x.length - 1, t + reach);
+                int best = t;
+                double peak = Double.NEGATIVE_INFINITY;
+                for (int i = from; i <= to; i++) {
+                    if (x[i] > peak) {
+                        peak = x[i];
+                        best = i;
+                    }
+                }
+                if (!marks.isEmpty() && best <= marks.get(marks.size() - 1)[0]) {
+                    best = marks.get(marks.size() - 1)[0] + period;
+                }
+                marks.add(new int[] {best, period, 1});
+                t = best + period;
+            } else {
+                marks.add(new int[] {t, unv, 0});
+                t += unv;
+            }
+        }
+        int outLen = (int) Math.round(x.length / speed);
+        double[] out = new double[outLen + rate / 10];
+        double[] norm = new double[out.length];
+        double u = 0;
+        int k = 0;
+        while (u < outLen) {
+            double a = u * speed;   // where in the input this output moment comes from
+            while (k + 1 < marks.size() && Math.abs(marks.get(k + 1)[0] - a) <= Math.abs(marks.get(k)[0] - a)) {
+                k++;
+            }
+            int[] m = marks.get(k);
+            int period = m[1];
+            double r = 1;
+            if (m[2] == 1 && ratio != null && ratio.length > 0) {
+                int f = Math.max(0, Math.min(ratio.length - 1, m[0] / hop));
+                r = ratio[f];
+            }
+            int c = (int) Math.round(u);
+            for (int i = -period; i < period; i++) {
+                int src = m[0] + i;
+                int dst = c + i;
+                if (src < 0 || src >= x.length || dst < 0 || dst >= out.length) {
+                    continue;
+                }
+                double w = 0.5 + 0.5 * Math.cos(Math.PI * i / period);
+                out[dst] += x[src] * w;
+                norm[dst] += w;
+            }
+            u += m[2] == 1 ? period / r : period;
+        }
+        float[] y = new float[outLen];
+        for (int i = 0; i < outLen; i++) {
+            y[i] = (float) (norm[i] > 0.5 ? out[i] / norm[i] : out[i]);
+        }
+        return y;
+    }
+
+    /**
      * Changes tempo and pitch over time, keeping the sound of the voice: a WSOLA time stretch
      * by {@code speed / ratio}, then reading the result {@code ratio} times as fast.
      *

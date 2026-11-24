@@ -294,8 +294,8 @@ public final class NarrationExample {
             boolean quick) throws IOException {
         boolean de = sp.language().equals("de");
         Narrator narrator = new Narrator(lib, Narrator.Settings.defaults());
-        // the same pieces without the sentence melody, joined by plain gaps, to hear what it does
-        Narrator plain = new Narrator(lib, new Narrator.Settings(0.06, 0, -16, false, false));
+        // the same pieces bent to one sentence melody, to hear what it does
+        Narrator melody = new Narrator(lib, new Narrator.Settings(0.03, 0, -16, false, true));
         LineTemplate ask = LineTemplate.parse(de ? "Was ist {a} plus {b}?" : "What is {a} plus {b}?");
         List<Case> cases = new ArrayList<>();
         int[][] asks = quick ? new int[][] {{4, 6}, {2, 5}} : new int[][] {{7, 8}, {9, 4}, {6, 10}};
@@ -316,8 +316,8 @@ public final class NarrationExample {
             String id = String.format("%02d", n);
             Map<String, Audio> made = new LinkedHashMap<>();
             made.put("words", wordByWord(maker, c.line()));
-            made.put("pieces-plain", plain.splice(c.line()).audio());
             made.put("pieces", narrator.splice(c.line()).audio());
+            made.put("pieces-melody", melody.splice(c.line()).audio());
             maker.full(c.line());
             lib.save();
             made.put("whole", narrator.say(c.line()).audio());

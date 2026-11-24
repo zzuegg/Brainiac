@@ -165,6 +165,23 @@ class NarrationTest {
     }
 
     @Test
+    void psolaMovesPitchKeepingLength() {
+        int rate = 24000;
+        float[] x = new float[rate / 2];
+        for (int i = 0; i < x.length; i++) {
+            x[i] = (float) (0.5 * Math.sin(2 * Math.PI * 200 * i / rate));
+        }
+        double[] up = new double[60];
+        java.util.Arrays.fill(up, Math.pow(2, 2 / 12.0));
+        float[] y = Prosody.psola(x, rate, 1, up);
+        assertEquals(x.length, y.length, 2);
+        assertEquals(200 * Math.pow(2, 2 / 12.0), Prosody.median(Prosody.pitch(y, rate)), 6);
+        float[] z = Prosody.psola(x, rate, 1.25, null);
+        assertEquals(x.length / 1.25, z.length, 2);
+        assertEquals(200, Prosody.median(Prosody.pitch(z, rate)), 4);
+    }
+
+    @Test
     void stretchKeepsPitch() {
         int rate = 24000;
         float[] x = new float[rate];
