@@ -127,6 +127,29 @@ class NarrationTest {
     }
 
     @Test
+    void joinsLineUpWaveforms() {
+        // two takes of the same vowel, out of phase and at other levels: the join must not jump
+        int rate = 24000;
+        float[] a = new float[rate];
+        float[] b = new float[rate];
+        for (int i = 0; i < rate; i++) {
+            a[i] = (float) (0.5 * Math.sin(2 * Math.PI * 200 * i / rate));
+            b[i] = (float) (0.3 * Math.sin(2 * Math.PI * 200 * i / rate + 2.0));
+        }
+        float[] x = AudioTools.splice(List.of(new AudioTools.Segment(a, 0, 12000),
+                new AudioTools.Segment(b, 9000, rate)), rate, 0.025, 0.008);
+        float jump = 0;
+        for (int i = 1; i < x.length; i++) {
+            jump = Math.max(jump, Math.abs(x[i] - x[i - 1]));
+        }
+        // a 200 Hz sine of 0.5 moves at most 0.5 * 2 pi * 200 / 24000 = 0.026 a sample
+        assertTrue(jump < 0.03, "jump " + jump);
+        // the level is matched at the join, then eases back to the second take's own
+        assertEquals(0.5, AudioTools.rms(x, 12100, 600) * Math.sqrt(2), 0.06);
+        assertEquals(0.3, AudioTools.rms(x, x.length - 1000, 600) * Math.sqrt(2), 0.03);
+    }
+
+    @Test
     void loudnessNormalizes() {
         int rate = 24000;
         float[] x = new float[rate * 2];
@@ -165,6 +188,9 @@ class NarrationTest {
         assertEquals("Was ist vier plus zwei?", spliced.text());
         // the spliced audio says the right words, in order
         assertEquals("was ist vier plus zwei", new ToneHearing(tts).words(spliced.audio()));
+        assertEquals(2, spliced.clips().size());   // one join, inside "plus"
+        // a line one take already says needs no join
+        assertEquals(1, n.say(t.source(), Map.of("a", 4, "b", 5)).clips().size());
         assertEquals(Narrator.Mode.FULL, n.say(t.source(), Map.of("a", 2, "b", 6)).mode());
         assertEquals(List.of("neun?"), n.missing(t.render(Map.of("a", 1, "b", 9), DE)));
         assertThrows(IllegalStateException.class, () -> n.say(t.source(), Map.of("a", 1, "b", 9)));

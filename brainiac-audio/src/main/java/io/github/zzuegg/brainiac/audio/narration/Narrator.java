@@ -9,9 +9,9 @@ import java.util.Map;
 
 /**
  * Speaks a game's lines from a {@link ClipLibrary}, with no speech model at run time. A line
- * recorded whole is played as recorded; any other line is spliced from recorded pieces, each
- * cut from a take of the same template (so its melody fits its place), with short
- * equal-power crossfades at the joins and the result brought to one loudness.
+ * recorded whole is played as recorded; any other line is spliced from whole takes of its
+ * template, switching takes only at join points inside the words between the values, with
+ * pitch-aligned crossfades, and brought to one loudness.
  *
  * <pre>{@code
  * Narrator narrator = Narrator.open(Path.of("voice/de"));
@@ -43,19 +43,19 @@ public final class Narrator {
     /**
      * How lines are put together.
      *
-     * @param crossfadeSeconds the overlap at each join
+     * @param crossfadeSeconds the crossfade at each join, inside a word both takes say
      * @param targetLufs the loudness of every line
      * @param preferFull whether a line recorded whole is played instead of splicing
      */
     public record Settings(double crossfadeSeconds, double targetLufs, boolean preferFull) {
 
         /**
-         * The defaults: 12 ms crossfades, -16 LUFS, whole lines first.
+         * The defaults: 25 ms crossfades, -16 LUFS, whole lines first.
          *
          * @return the settings
          */
         public static Settings defaults() {
-            return new Settings(0.012, -16, true);
+            return new Settings(0.025, -16, true);
         }
     }
 
@@ -129,67 +129,169 @@ public final class Narrator {
         if (settings.preferFull()) {
             ClipLibrary.Clip full = library.full(line.text());
             if (full != null) {
-                Audio a = library.audio(full);
-                float[] x = AudioTools.trim(a.samples(), a.sampleRate(), 0.05);
-                return new Spoken(line.text(), Loudness.normalize(new Audio(x, a.sampleRate()), settings.targetLufs(),
-                        -1), Mode.FULL, List.of(full));
+                return whole(line, full);
             }
         }
         return splice(line);
     }
 
+    private Spoken whole(LineTemplate.Line line, ClipLibrary.Clip full) {
+        Audio a = library.audio(full);
+        float[] x = AudioTools.trim(a.samples(), a.sampleRate(), 0.05);
+        return new Spoken(line.text(), Loudness.normalize(new Audio(x, a.sampleRate()), settings.targetLufs(), -1),
+                Mode.FULL, List.of(full));
+    }
+
     /**
-     * Splices a line from its pieces, even if it was recorded whole.
+     * Splices a line from takes of its template: each value's stretch, from the join point
+     * before it to the one after, comes from a take that says that value, and the takes are
+     * chosen so the joins are fewest and sound most alike (a take that already says two of
+     * the values needs no join between them). Joins are pitch-aligned crossfades inside the
+     * words between values.
      *
      * @param line the line
      * @return the spoken line
-     * @throws IllegalStateException if a piece was never recorded
+     * @throws IllegalStateException if a value was never recorded
      */
     public Spoken splice(LineTemplate.Line line) {
         List<LineTemplate.Unit> units = line.units();
-        List<ClipLibrary.Clip> used = new ArrayList<>();
+        int[] slots = ClipMaker.slots(units);
+        List<ClipLibrary.Clip> takes = library.takes(line.template());
+        if (slots.length == 0 || takes.isEmpty()) {
+            ClipLibrary.Clip full = library.full(line.text());
+            if (full == null) {
+                throw new IllegalStateException("not recorded: " + line.text());
+            }
+            return whole(line, full);
+        }
+        // candidates for each value's stretch
+        List<List<ClipLibrary.Clip>> cand = new ArrayList<>();
         List<String> missing = new ArrayList<>();
-        for (int i = 0; i < units.size(); i++) {
-            LineTemplate.Unit u = units.get(i);
-            ClipLibrary.Clip c = library.unit(line.template(), i, u.text());
-            if (c == null) {
-                c = library.anyUnit(u.text(), u.position());
+        for (int slot : slots) {
+            List<ClipLibrary.Clip> c = new ArrayList<>();
+            for (ClipLibrary.Clip t : takes) {
+                if (t.units().size() == units.size() && t.joins().length == slots.length - 1
+                        && t.units().get(slot).equals(units.get(slot).text())) {
+                    c.add(t);
+                }
             }
-            if (c == null) {
-                missing.add(u.text());
+            if (c.isEmpty()) {
+                missing.add(units.get(slot).text());
             }
-            used.add(c);
+            cand.add(c);
         }
         if (!missing.isEmpty()) {
             throw new IllegalStateException("not recorded: " + missing + " (for: " + line.text() + ")");
         }
-        int rate = library.audio(used.get(0)).sampleRate();
-        List<float[]> parts = new ArrayList<>();
-        for (ClipLibrary.Clip c : used) {
-            parts.add(library.audio(c).resample(rate).samples());
+        List<ClipLibrary.Clip> path = cheapest(cand);
+        int rate = library.audio(path.get(0)).sampleRate();
+        List<AudioTools.Segment> segments = new ArrayList<>();
+        int from = 0;
+        for (int j = 0; j < path.size(); j++) {
+            ClipLibrary.Clip c = path.get(j);
+            boolean last = j == path.size() - 1;
+            if (!last && path.get(j + 1) == c) {
+                continue;   // the same take goes on: no join here
+            }
+            float[] x = library.audio(c).resample(rate).samples();
+            int to = last ? x.length : c.joins()[j];
+            segments.add(new AudioTools.Segment(x, from, to));
+            if (!last) {
+                from = path.get(j + 1).joins()[j];
+            }
         }
-        float[] x = AudioTools.join(parts, rate, settings.crossfadeSeconds());
+        float[] x = AudioTools.splice(segments, rate, settings.crossfadeSeconds(), 0.008);
         x = AudioTools.trim(x, rate, 0.05);
         Audio a = Loudness.normalize(new Audio(x, rate), settings.targetLufs(), -1);
-        return new Spoken(line.text(), a, Mode.SPLICED, used);
+        return new Spoken(line.text(), a, Mode.SPLICED, java.util.List.copyOf(new java.util.LinkedHashSet<>(path)));
+    }
+
+    /** The takes, one per value, with the least join cost (Viterbi over the values). */
+    private List<ClipLibrary.Clip> cheapest(List<List<ClipLibrary.Clip>> cand) {
+        int n = cand.size();
+        double[][] cost = new double[n][];
+        int[][] back = new int[n][];
+        cost[0] = new double[cand.get(0).size()];
+        for (int i = 0; i < cost[0].length; i++) {
+            cost[0][i] = cand.get(0).get(i).frame() ? 0 : 0.01;
+        }
+        for (int j = 1; j < n; j++) {
+            List<ClipLibrary.Clip> prev = cand.get(j - 1);
+            List<ClipLibrary.Clip> cur = cand.get(j);
+            cost[j] = new double[cur.size()];
+            back[j] = new int[cur.size()];
+            for (int k = 0; k < cur.size(); k++) {
+                double best = Double.POSITIVE_INFINITY;
+                for (int p = 0; p < prev.size(); p++) {
+                    double c = cost[j - 1][p] + joinCost(prev.get(p), cur.get(k), j - 1);
+                    if (c < best) {
+                        best = c;
+                        back[j][k] = p;
+                    }
+                }
+                cost[j][k] = best;
+            }
+        }
+        int k = 0;
+        for (int i = 1; i < cost[n - 1].length; i++) {
+            if (cost[n - 1][i] < cost[n - 1][k]) {
+                k = i;
+            }
+        }
+        ClipLibrary.Clip[] out = new ClipLibrary.Clip[n];
+        for (int j = n - 1; j >= 0; j--) {
+            out[j] = cand.get(j).get(k);
+            if (j > 0) {
+                k = back[j][k];
+            }
+        }
+        return List.of(out);
+    }
+
+    /** How audible a join from one take to another at join point {@code b} would be: 0 for the same take. */
+    private double joinCost(ClipLibrary.Clip a, ClipLibrary.Clip b, int join) {
+        if (a == b) {
+            return 0;
+        }
+        Audio xa = library.audio(a);
+        Audio xb = library.audio(b).resample(xa.sampleRate());
+        int rate = xa.sampleRate();
+        int ja = a.joins()[join];
+        int jb = b.joins()[join];
+        double spectral = AudioTools.distance(AudioTools.spectrumAt(xa.samples(), rate, ja),
+                AudioTools.spectrumAt(xb.samples(), rate, jb));
+        double corr = AudioTools.bestShift(xa.samples(), ja, xb.samples(), jb, (int) (0.025 * rate),
+                (int) (0.008 * rate))[1];
+        return 1 + spectral + 5 * (1 - corr);
     }
 
     /**
-     * The pieces of a line that were never recorded, for checking a game's lines ahead.
+     * The values of a line that were never recorded, for checking a game's lines ahead.
      *
      * @param line the line
-     * @return the missing pieces' words, empty if the line can be said
+     * @return the missing values' words, empty if the line can be said
      */
     public List<String> missing(LineTemplate.Line line) {
-        if (settings.preferFull() && library.full(line.text()) != null) {
+        if (library.full(line.text()) != null) {
             return List.of();
         }
-        List<String> out = new ArrayList<>();
         List<LineTemplate.Unit> units = line.units();
-        for (int i = 0; i < units.size(); i++) {
-            LineTemplate.Unit u = units.get(i);
-            if (library.unit(line.template(), i, u.text()) == null && library.anyUnit(u.text(), u.position()) == null) {
-                out.add(u.text());
+        int[] slots = ClipMaker.slots(units);
+        List<ClipLibrary.Clip> takes = library.takes(line.template());
+        List<String> out = new ArrayList<>();
+        if (slots.length == 0) {
+            return List.of(line.text());
+        }
+        for (int slot : slots) {
+            boolean found = false;
+            for (ClipLibrary.Clip t : takes) {
+                if (t.units().size() == units.size() && t.units().get(slot).equals(units.get(slot).text())) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                out.add(units.get(slot).text());
             }
         }
         return out;

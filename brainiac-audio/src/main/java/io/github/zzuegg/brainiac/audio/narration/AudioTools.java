@@ -236,6 +236,10 @@ final class AudioTools {
      * @return {@code [frames][40]}
      */
     static float[][] logMel(float[] x, int rate) {
+        return logMel(x, rate, true);
+    }
+
+    static float[][] logMel(float[] x, int rate, boolean removeMean) {
         int hop = rate / FRAME_RATE;
         int win = (int) (rate * 0.025);
         int nFft = Integer.highestOneBit(win - 1) << 1;
@@ -266,7 +270,7 @@ final class AudioTools {
                 out[f][m] = (float) Math.log(e + 1e-8);
             }
         }
-        for (int m = 0; m < bands; m++) {
+        for (int m = 0; m < bands && removeMean; m++) {
             double mean = 0;
             for (float[] fr : out) {
                 mean += fr[m];
@@ -339,6 +343,163 @@ final class AudioTools {
                 }
             }
         }
+    }
+
+    /**
+     * The Euclidean distance between two frames.
+     *
+     * @param a a frame
+     * @param b another of the same length
+     * @return the distance
+     */
+    static double distance(float[] a, float[] b) {
+        double d = 0;
+        for (int i = 0; i < a.length; i++) {
+            double t = a[i] - b[i];
+            d += t * t;
+        }
+        return Math.sqrt(d);
+    }
+
+    /**
+     * The log-mel spectrum around a sample, averaged over three 10 ms frames, without mean
+     * removal: for comparing the two sides of a join.
+     *
+     * @param x the samples
+     * @param rate the sample rate
+     * @param at the sample
+     * @return 40 log energies
+     */
+    static float[] spectrumAt(float[] x, int rate, int at) {
+        int half = (int) (0.03 * rate);
+        int from = Math.max(0, at - half);
+        int to = Math.min(x.length, at + half);
+        float[][] m = logMel(Arrays.copyOfRange(x, from, Math.max(from + 1, to)), rate, false);
+        float[] out = new float[40];
+        int mid = m.length / 2;
+        int n = 0;
+        for (int f = Math.max(0, mid - 1); f <= Math.min(m.length - 1, mid + 1); f++) {
+            for (int k = 0; k < 40; k++) {
+                out[k] += m[f][k];
+            }
+            n++;
+        }
+        for (int k = 0; k < 40; k++) {
+            out[k] /= Math.max(1, n);
+        }
+        return out;
+    }
+
+    /**
+     * The best normalized cross-correlation between a window of {@code a} around {@code at}
+     * and windows of {@code b} around {@code bt} shifted by up to {@code reach} samples.
+     *
+     * @param a one signal
+     * @param at the centre in it
+     * @param b another
+     * @param bt the centre in it
+     * @param window the window length
+     * @param reach the largest shift
+     * @return {@code {shift, correlation}}
+     */
+    static double[] bestShift(float[] a, int at, float[] b, int bt, int window, int reach) {
+        int half = window / 2;
+        double bestC = -2;
+        int best = 0;
+        for (int d = -reach; d <= reach; d++) {
+            double ab = 0;
+            double aa = 0;
+            double bb = 0;
+            for (int i = -half; i < half; i++) {
+                int ia = at + i;
+                int ib = bt + d + i;
+                double va = ia >= 0 && ia < a.length ? a[ia] : 0;
+                double vb = ib >= 0 && ib < b.length ? b[ib] : 0;
+                ab += va * vb;
+                aa += va * va;
+                bb += vb * vb;
+            }
+            double c = aa == 0 || bb == 0 ? 0 : ab / Math.sqrt(aa * bb);
+            if (c > bestC) {
+                bestC = c;
+                best = d;
+            }
+        }
+        return new double[] {best, bestC};
+    }
+
+    /** The RMS of a window around a sample. */
+    static double rms(float[] x, int at, int half) {
+        double s = 0;
+        int n = 0;
+        for (int i = Math.max(0, at - half); i < Math.min(x.length, at + half); i++) {
+            s += (double) x[i] * x[i];
+            n++;
+        }
+        return n == 0 ? 0 : Math.sqrt(s / n);
+    }
+
+    /**
+     * A stretch of a take, for {@link #splice}.
+     *
+     * @param x the take's samples
+     * @param from the first sample (a join point, or 0)
+     * @param to the sample after the last (a join point, or the end)
+     */
+    record Segment(float[] x, int from, int to) {
+    }
+
+    /**
+     * Splices stretches of takes at their join points. Each join first shifts the incoming
+     * take by up to {@code reach} so its waveform lines up with the outgoing one (pitch
+     * periods in phase, as WSOLA does), then crossfades over {@code fade}; the incoming take's
+     * level is matched to the outgoing one at the join and eased back over 150 ms.
+     *
+     * @param segments the stretches, in order
+     * @param rate the sample rate
+     * @param fadeSeconds the crossfade
+     * @param reachSeconds the largest shift
+     * @return the spliced samples
+     */
+    static float[] splice(List<Segment> segments, int rate, double fadeSeconds, double reachSeconds) {
+        int fade = Math.max(2, (int) (fadeSeconds * rate));
+        int reach = (int) (reachSeconds * rate);
+        int ease = (int) (0.15 * rate);
+        int total = 0;
+        for (Segment s : segments) {
+            total += s.to() - s.from() + fade + 2 * reach;
+        }
+        float[] out = new float[total];
+        int n = 0;
+        Segment first = segments.get(0);
+        int stop = segments.size() == 1 ? first.to() : first.to() - fade / 2;
+        for (int i = first.from(); i < stop; i++) {
+            out[n++] = first.x()[i];
+        }
+        for (int s = 1; s < segments.size(); s++) {
+            Segment a = segments.get(s - 1);
+            Segment b = segments.get(s);
+            int shift = (int) bestShift(a.x(), a.to(), b.x(), b.from(), Math.max(fade, (int) (0.025 * rate)),
+                    reach)[0];
+            int bt = b.from() + shift;
+            double ga = rms(a.x(), a.to(), fade);
+            double gb = rms(b.x(), bt, fade);
+            double g = gb > 1e-6 && ga > 1e-6 ? Math.max(0.6, Math.min(1.6, ga / gb)) : 1;
+            for (int i = 0; i < fade; i++) {
+                double w = 0.5 - 0.5 * Math.cos(Math.PI * (i + 0.5) / fade);
+                int ia = a.to() - fade / 2 + i;
+                int ib = bt - fade / 2 + i;
+                double va = ia >= 0 && ia < a.x().length ? a.x()[ia] : 0;
+                double vb = ib >= 0 && ib < b.x().length ? b.x()[ib] * g : 0;
+                out[n++] = (float) ((1 - w) * va + w * vb);
+            }
+            int end = s == segments.size() - 1 ? b.to() : b.to() - fade / 2;
+            for (int i = bt + fade - fade / 2, k = 0; i < end; i++, k++) {
+                double gk = 1 + (g - 1) * Math.max(0, 1 - (double) k / ease);
+                out[n++] = i >= 0 && i < b.x().length ? (float) (b.x()[i] * gk) : 0;
+            }
+        }
+        return Arrays.copyOf(out, n);
     }
 
     /**

@@ -8,7 +8,6 @@ import io.github.zzuegg.brainiac.audio.TranscriptionOptions;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,10 +23,12 @@ import java.util.function.Consumer;
  * best and whose voice is closest to the reference. Then either
  * <ul>
  * <li>{@link #full}: the take is the line, or
- * <li>{@link #splice}: the template is spoken once with example values (the frame), cut at
- *     the quiet dips between its pieces where recognition confirms the words on each side,
- *     and for each value a take of the same template is aligned to the frame by dynamic time
- *     warping and the value's words cut out, so the number keeps the melody of its place.
+ * <li>{@link #splice}: the template is spoken with example values (the frame) and once more
+ *     per value of each name, all whole lines. Between each two values a join point is
+ *     chosen inside the words between them (in "Was ist {a} <b>plus</b> {b}?", inside
+ *     "plus") where the takes, aligned by dynamic time warping, sound most alike. A {@link
+ *     Narrator} switches takes only there, so no word is ever cut at its edge and each number
+ *     keeps the melody of its place.
  * </ul>
  * {@link #prepare} picks between them by how many lines the template can make.
  */
@@ -105,8 +106,6 @@ public final class ClipMaker {
     private final VoiceEmbedder embedder;
     private final Consumer<String> log;
     private float[] referencePrint;
-    private final Map<String, Take> frames = new HashMap<>();
-    private final Map<String, int[]> frameCuts = new HashMap<>();
 
     /**
      * A recorder.
@@ -215,8 +214,8 @@ public final class ClipMaker {
         Take t = takes(text).get(0);
         Audio a = new Audio(AudioTools.trim(t.audio().samples(), t.audio().sampleRate(), 0.05),
                 t.audio().sampleRate());
-        return library.put(new ClipLibrary.Clip(ClipLibrary.FULL, line.template(), -1, text, "line", "", t.asr(),
-                t.voice()), a);
+        return library.put(new ClipLibrary.Clip(ClipLibrary.FULL, line.template(), text, List.of(), new int[0], false,
+                "", t.asr(), t.voice()), a);
     }
 
     /**
@@ -234,112 +233,197 @@ public final class ClipMaker {
 
     // ---------------------------------------------------------------- splicing
 
+    /** Takes recorded before join points are chosen, so the choice sees how the takes differ. */
+    static final int JOIN_SAMPLE = 8;
+
     /**
-     * Records a template's pieces for splicing: the frame (the template with the example
-     * values), then each value of each name in a take of its own.
+     * The units of a line that say values.
+     *
+     * @param units the units
+     * @return their indices, in order
+     */
+    static int[] slots(List<LineTemplate.Unit> units) {
+        return java.util.stream.IntStream.range(0, units.size()).filter(i -> units.get(i).name() != null).toArray();
+    }
+
+    private static List<String> texts(LineTemplate.Line line) {
+        return line.units().stream().map(LineTemplate.Unit::text).toList();
+    }
+
+    /**
+     * Records a template for splicing. The frame (the template with the example values) and
+     * a take for each value of each name are spoken whole. Between each two values a join
+     * point is chosen inside the words between them, where the frame and the takes, aligned
+     * by dynamic time warping, sound most alike and the sound is steady; every take gets the
+     * join points mapped onto it. A spliced line then switches takes only inside a word all
+     * of them say, never at the edge of a number.
      *
      * @param template the template
-     * @param example a value for every name; the literal words are cut from this take
+     * @param example a value for every name: the frame's
      * @param domains the values to record for each name
      */
     public void splice(LineTemplate template, Map<String, ?> example, Map<String, ? extends List<?>> domains) {
+        String src = template.source();
         LineTemplate.Line frameLine = template.render(example, speller);
-        Take frame = frame(template, frameLine);
-        int[] cuts = frameCuts.get(template.source());
-        for (Map.Entry<String, ? extends List<?>> d : domains.entrySet()) {
-            String name = d.getKey();
-            for (Object v : d.getValue()) {
-                Map<String, Object> values = new LinkedHashMap<>(example);
-                values.put(name, v);
-                LineTemplate.Line line = template.render(values, speller);
-                List<LineTemplate.Unit> units = line.units();
-                if (units.size() != frameLine.units().size()) {
-                    log.accept("  skipped " + line.text() + ": its pieces differ from the frame's");
-                    continue;
-                }
-                boolean need = false;
-                for (int i = 0; i < units.size(); i++) {
-                    if (name.equals(units.get(i).name()) && library.unit(template.source(), i, units.get(i).text())
-                            == null) {
-                        need = true;
-                    }
-                }
-                if (need) {
-                    recordValue(template, frame, cuts, line, name);
+        List<LineTemplate.Unit> frameUnits = frameLine.units();
+        int[] slots = slots(frameUnits);
+        if (slots.length < 2) {
+            // one value: every take is a whole line already
+            List<Map<String, Object>> all = new ArrayList<>();
+            for (Map.Entry<String, ? extends List<?>> d : domains.entrySet()) {
+                for (Object v : d.getValue()) {
+                    Map<String, Object> values = new LinkedHashMap<>(example);
+                    values.put(d.getKey(), v);
+                    all.add(values);
                 }
             }
+            full(template, all);
+            return;
+        }
+        List<LineTemplate.Line> lines = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        seen.add(frameLine.text());
+        for (Map.Entry<String, ? extends List<?>> d : domains.entrySet()) {
+            for (Object v : d.getValue()) {
+                Map<String, Object> values = new LinkedHashMap<>(example);
+                values.put(d.getKey(), v);
+                LineTemplate.Line line = template.render(values, speller);
+                if (line.units().size() != frameUnits.size()) {
+                    log.accept("  skipped " + line.text() + ": its pieces differ from the frame's");
+                } else if (seen.add(line.text()) && library.take(src, line.text()) == null) {
+                    lines.add(line);
+                }
+            }
+        }
+        ClipLibrary.Clip frame = library.take(src, frameLine.text());
+        int first = 0;
+        if (frame == null) {
+            List<Take> sample = new ArrayList<>();
+            for (; first < Math.min(JOIN_SAMPLE, lines.size()); first++) {
+                sample.add(takes(lines.get(first).text()).get(0));
+            }
+            Take ft = null;
+            Cut cut = null;
+            for (Take t : takes(frameLine.text())) {
+                Cut c = cutByRecognition(t.audio(), frameUnits);
+                if (cut == null || c.score() > cut.score()) {
+                    ft = t;
+                    cut = c;
+                }
+                if (c.score() >= settings.minAsr()) {
+                    break;
+                }
+            }
+            log.accept(String.format("  frame of %s cut with match %.2f", src, cut.score()));
+            List<Audio> others = sample.stream().map(Take::audio).toList();
+            int[] joins = chooseJoins(ft.audio(), cut.frames(), slots, others);
+            frame = library.put(new ClipLibrary.Clip(ClipLibrary.TAKE, src, frameLine.text(), texts(frameLine), joins,
+                    true, "", ft.asr(), ft.voice()), ft.audio());
+            for (int i = 0; i < sample.size(); i++) {
+                storeTake(src, frame, lines.get(i), sample.get(i));
+            }
             library.save();
+        }
+        for (int i = first; i < lines.size(); i++) {
+            storeTake(src, frame, lines.get(i), takes(lines.get(i).text()).get(0));
+            if (i % 10 == 9) {
+                library.save();
+            }
         }
         library.save();
     }
 
-    private Take frame(LineTemplate template, LineTemplate.Line line) {
-        Take have = frames.get(template.source());
-        if (have != null) {
-            return have;
-        }
-        List<LineTemplate.Unit> units = line.units();
-        Take best = null;
-        int[] bestCuts = null;
-        double bestScore = -1;
-        for (Take t : takes(line.text())) {
-            Cut c = cutByRecognition(t.audio(), units);
-            if (c.score() > bestScore) {
-                best = t;
-                bestCuts = c.frames();
-                bestScore = c.score();
-            }
-            if (c.score() >= settings.minAsr()) {
-                break;
-            }
-        }
-        log.accept(String.format("  frame of %s cut with match %.2f", template.source(), bestScore));
-        frames.put(template.source(), best);
-        frameCuts.put(template.source(), bestCuts);
-        store(template, line, best, bestCuts, null);
-        return best;
+    private void storeTake(String template, ClipLibrary.Clip frame, LineTemplate.Line line, Take t) {
+        int[] joins = mapJoins(library.audio(frame), frame.joins(), t.audio());
+        library.put(new ClipLibrary.Clip(ClipLibrary.TAKE, template, line.text(), texts(line), joins, false, "",
+                t.asr(), t.voice()), t.audio());
     }
 
-    private void recordValue(LineTemplate template, Take frame, int[] frameCut, LineTemplate.Line line, String name) {
-        List<LineTemplate.Unit> units = line.units();
-        Take best = null;
-        int[] bestCuts = null;
-        double bestScore = -1;
-        for (Take t : takes(line.text())) {
-            Cut c = cutByWarp(frame.audio(), frameCut, t.audio(), units, name);
-            if (c.score() > bestScore) {
-                best = t;
-                bestCuts = c.frames();
-                bestScore = c.score();
-            }
-            if (c.score() >= settings.minAsr()) {
-                break;
-            }
-        }
-        if (bestScore < settings.minAsr()) {
-            log.accept(String.format("  ! %s: best cut matched only %.2f", line.text(), bestScore));
-        }
-        store(template, line, best, bestCuts, name);
-    }
-
-    /** Stores the units of a cut take: all of them, or only those of one name. */
-    private void store(LineTemplate template, LineTemplate.Line line, Take take, int[] cuts, String only) {
-        List<LineTemplate.Unit> units = line.units();
-        Audio a = take.audio();
-        int rate = a.sampleRate();
+    /**
+     * Chooses the join points on the frame: for each two neighbouring values, the 10 ms frame
+     * inside the words between them (away from their edges) where the other takes, aligned
+     * to the frame, differ least from it and the sound changes least. Values with no words
+     * between them join at the cut between them.
+     *
+     * @param frame the frame
+     * @param cuts the frame's unit boundaries, in envelope frames
+     * @param slots the units that say values
+     * @param others other takes of the template
+     * @return a sample of the frame per join
+     */
+    int[] chooseJoins(Audio frame, int[] cuts, int[] slots, List<Audio> others) {
+        int rate = frame.sampleRate();
         int hop = rate / AudioTools.FRAME_RATE;
-        int half = (int) (0.006 * rate);   // half a crossfade of real audio past each cut
-        for (int i = 0; i < units.size(); i++) {
-            LineTemplate.Unit u = units.get(i);
-            if (only != null && !only.equals(u.name())) {
+        float[][] mf = AudioTools.logMel(frame.samples(), rate);
+        List<float[][]> mels = new ArrayList<>();
+        List<int[]> maps = new ArrayList<>();
+        for (Audio o : others) {
+            float[][] mo = AudioTools.logMel(o.resample(rate).samples(), rate);
+            mels.add(mo);
+            maps.add(AudioTools.warp(mf, mo));
+        }
+        int[] joins = new int[slots.length - 1];
+        for (int b = 0; b < joins.length; b++) {
+            int from = cuts[slots[b]];            // where the words after value b start
+            int to = cuts[slots[b + 1] - 1];      // where value b + 1 starts
+            if (to - from < 3) {
+                joins[b] = Math.min(mf.length - 1, from) * hop;
                 continue;
             }
-            int from = i == 0 ? 0 : Math.max(0, cuts[i - 1] * hop - half);
-            int to = i == units.size() - 1 ? a.samples().length : Math.min(a.samples().length, cuts[i] * hop + half);
-            float[] x = java.util.Arrays.copyOfRange(a.samples(), from, Math.max(from, to));
-            library.put(new ClipLibrary.Clip(ClipLibrary.UNIT, template.source(), i, u.text(), u.position(), "",
-                    take.asr(), take.voice()), new Audio(x, rate));
+            int margin = Math.max(1, (int) Math.round(0.2 * (to - from)));
+            int best = (from + to) / 2;
+            double bestCost = Double.POSITIVE_INFINITY;
+            for (int t = from + margin; t <= to - margin && t < mf.length - 1; t++) {
+                double cost = 0.5 * AudioTools.distance(mf[t - 1], mf[t + 1]);
+                for (int k = 0; k < mels.size(); k++) {
+                    float[][] mo = mels.get(k);
+                    cost += AudioTools.distance(mf[t], mo[maps.get(k)[t]]) / mels.size();
+                }
+                if (cost < bestCost) {
+                    bestCost = cost;
+                    best = t;
+                }
+            }
+            joins[b] = best * hop;
         }
+        return joins;
+    }
+
+    /**
+     * Maps the frame's join points onto another take through the warping path, then moves
+     * each up to 30 ms to where the take sounds most like the frame there.
+     *
+     * @param frame the frame
+     * @param joins the frame's join points, in samples
+     * @param take another take
+     * @return the take's join points, in samples
+     */
+    static int[] mapJoins(Audio frame, int[] joins, Audio take) {
+        int rate = take.sampleRate();
+        int hop = rate / AudioTools.FRAME_RATE;
+        float[][] mf = AudioTools.logMel(frame.resample(rate).samples(), rate);
+        float[][] mt = AudioTools.logMel(take.samples(), rate);
+        int[] map = AudioTools.warp(mf, mt);
+        int[] out = new int[joins.length];
+        for (int b = 0; b < joins.length; b++) {
+            int jf = Math.min(mf.length - 1, joins[b] / hop);
+            int center = map[jf];
+            int best = center;
+            double bestCost = Double.POSITIVE_INFINITY;
+            for (int t = Math.max(1, center - 3); t <= Math.min(mt.length - 2, center + 3); t++) {
+                double cost = AudioTools.distance(mf[jf], mt[t]) + 0.1 * Math.abs(t - center);
+                if (cost < bestCost) {
+                    bestCost = cost;
+                    best = t;
+                }
+            }
+            out[b] = best * hop;
+        }
+        // keep them in order
+        for (int b = 1; b < out.length; b++) {
+            out[b] = Math.max(out[b], out[b - 1] + hop);
+        }
+        return out;
     }
 
     /**
@@ -429,84 +513,6 @@ public final class ClipMaker {
             prev = best;
         }
         return new Cut(cuts, score);
-    }
-
-    /**
-     * Cuts a take of the template by aligning it to the frame: each of the frame's cuts maps
-     * through the warping path and snaps to a nearby dip; the edges of the units of {@code
-     * name} are then checked by recognition on both sides, moving to other dips until they match.
-     */
-    Cut cutByWarp(Audio frame, int[] frameCut, Audio take, List<LineTemplate.Unit> units, String name) {
-        int rate = take.sampleRate();
-        float[] x = take.samples();
-        double[] env = AudioTools.envelope(x, rate);
-        List<AudioTools.Valley> valleys = AudioTools.valleys(env);
-        int[] map = AudioTools.warp(AudioTools.logMel(frame.resample(rate).samples(), rate),
-                AudioTools.logMel(x, rate));
-        int[] cuts = new int[frameCut.length];
-        for (int b = 0; b < frameCut.length; b++) {
-            int mapped = map[Math.min(map.length - 1, frameCut[b])];
-            cuts[b] = snap(valleys, mapped, 8, mapped);
-        }
-        double score = 1;
-        for (int b = 0; b < cuts.length; b++) {
-            boolean edge = name.equals(units.get(b).name()) || name.equals(units.get(b + 1).name());
-            if (!edge) {
-                continue;
-            }
-            double bestSim = -1;
-            int best = cuts[b];
-            for (int f : options(valleys, cuts[b], 15)) {
-                if (b > 0 && f <= cuts[b - 1] + 4 || b + 1 < cuts.length && f >= cuts[b + 1] - 4) {
-                    continue;
-                }
-                double sim = boundary(x, rate, env.length, units, b, f);
-                if (sim > bestSim) {
-                    bestSim = sim;
-                    best = f;
-                }
-                if (sim >= 0.9) {
-                    break;
-                }
-            }
-            cuts[b] = best;
-            score = Math.min(score, Math.max(0, bestSim));
-        }
-        return new Cut(cuts, score);
-    }
-
-    /** The dip nearest a frame (deeper ones preferred) within a reach, or a fallback. */
-    private static int snap(List<AudioTools.Valley> valleys, int frame, int reach, int fallback) {
-        int best = fallback;
-        double bestCost = Double.POSITIVE_INFINITY;
-        for (AudioTools.Valley v : valleys) {
-            int d = Math.abs(v.frame() - frame);
-            if (d <= reach) {
-                double cost = d - 0.3 * v.depth();
-                if (cost < bestCost) {
-                    bestCost = cost;
-                    best = v.frame();
-                }
-            }
-        }
-        return best;
-    }
-
-    /** A frame and the dips near it, nearest first, at most three. */
-    private static List<Integer> options(List<AudioTools.Valley> valleys, int frame, int reach) {
-        List<Integer> out = new ArrayList<>();
-        out.add(frame);
-        List<AudioTools.Valley> near = new ArrayList<>();
-        for (AudioTools.Valley v : valleys) {
-            if (Math.abs(v.frame() - frame) <= reach && v.frame() != frame) {
-                near.add(v);
-            }
-        }
-        near.sort(Comparator.comparingInt(v -> Math.abs(v.frame() - frame)));
-        for (int i = 0; i < Math.min(2, near.size()); i++) {
-            out.add(near.get(i).frame());
-        }
-        return out;
     }
 
     // ---------------------------------------------------------------- choosing
