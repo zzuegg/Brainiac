@@ -68,19 +68,24 @@ public final class NarrationExample {
             + " zusammen, und am Ende bekommst du einen goldenen Stern.";
     private static final String REF_EN = "Hello! I'll be your guide today. We'll count, add and play together,"
             + " and at the end you'll get a golden star.";
-    private static final String CALM_DE = "Eine warme, sanfte und sehr ruhige Frauenstimme, Mitte dreißig, geduldig"
-            + " und freundlich wie eine liebe Lehrerin, entspannt und gleichmäßig, ein wenig langsamer als normal,"
-            + " für ein Lernspiel für Kinder.";
+    // VoiceDesign follows English instructions best and needs the accent said outright, or a German
+    // line may come out with an English accent
+    private static final String CALM_DE = "A warm, gentle and very calm female voice in her mid thirties, patient and"
+            + " friendly like a kind teacher, relaxed and even, a little slower than normal, for a learning game"
+            + " for children. She is a native German speaker with a standard German (Hochdeutsch) accent,"
+            + " no English accent.";
     private static final String CALM_EN = "A warm, gentle and very calm female voice in her mid thirties, patient and"
             + " friendly like a kind teacher, relaxed and even, a little slower than normal, for a learning game"
             + " for children.";
-    private static final String MALE_DE = "Eine warme, ruhige Männerstimme, Ende dreißig, freundlich und geduldig"
-            + " wie ein netter Lehrer, klar und ein wenig langsamer als normal, für ein Lernspiel für Kinder.";
+    private static final String MALE_DE = "A warm, calm male voice in his late thirties, friendly and patient like a"
+            + " kind teacher, clear and a little slower than normal, for a learning game for children. He is a"
+            + " native German speaker with a standard German (Hochdeutsch) accent, no English accent.";
     private static final String MALE_EN = "A warm, calm male voice in his late thirties, friendly and patient like a"
             + " kind teacher, clear and a little slower than normal, for a learning game for children.";
     // calm voices read a calm reference: an excited one ("Hallo! ... goldenen Stern") is copied into every line
     private static final String CALM_REF_DE = "Schön, dass du da bist. Wir rechnen heute zusammen, ganz in Ruhe,"
-            + " Schritt für Schritt.";
+            + " Schritt für Schritt. Wenn du einmal nicht weiterweißt, ist das gar nicht schlimm, dann überlegen"
+            + " wir gemeinsam.";
     private static final String CALM_REF_EN = "Nice to have you here. Today we'll do some sums together, nice and"
             + " slowly, one step at a time.";
 
@@ -262,12 +267,20 @@ public final class NarrationExample {
             TextToSpeech tts = trimming(model, device);
             Audio best = null;
             double bestScore = -1;
-            for (int seed = 0; seed < 4; seed++) {
+            for (int seed = 0; seed < 8; seed++) {
                 Audio a = tts.synthesize(text, SpeechOptions.defaults().instruction(description)
                         .language(sp.languageName()).seed(seed), null);
                 String heard = stt.transcribe(a, TranscriptionOptions.defaults().language(sp.language()), null).text();
-                double score = similarity(sp, text, heard) - 0.02 * Math.abs(a.seconds() - 10);
-                System.out.printf("  take %d: %.1f s, match %.2f%n", seed, a.seconds(), similarity(sp, text, heard));
+                // a take Whisper does not take for the language at all has a strong foreign accent
+                String said = stt.transcribe(a, TranscriptionOptions.defaults(), null).language();
+                boolean nativeLanguage = sp.language().equals(said);
+                double score = similarity(sp, text, heard) - 0.02 * Math.abs(a.seconds() - 10)
+                        - (nativeLanguage ? 0 : 1);
+                System.out.printf("  take %d: %.1f s, match %.2f, heard as %s%n", seed, a.seconds(),
+                        similarity(sp, text, heard), said);
+                // every take kept, to listen to and pick another with --reference
+                String name = file.getFileName().toString().replaceAll("\\.wav$", "");
+                Wav.write(Loudness.normalize(a, -16, -1), file.resolveSibling(name + "-take" + seed + ".wav"));
                 if (score > bestScore) {
                     best = a;
                     bestScore = score;
