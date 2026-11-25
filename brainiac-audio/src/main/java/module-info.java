@@ -9,4 +9,5 @@ module io.github.zzuegg.brainiac.audio {
     requires transitive io.github.zzuegg.brainiac.io;
     requires transitive io.github.zzuegg.brainiac.llm;
     exports io.github.zzuegg.brainiac.audio;
+    exports io.github.zzuegg.brainiac.audio.narration;
 }

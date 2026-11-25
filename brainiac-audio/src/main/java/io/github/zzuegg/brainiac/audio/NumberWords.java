@@ -2,8 +2,12 @@ package io.github.zzuegg.brainiac.audio;
 
 import java.math.BigInteger;
 
-/** English number words, as num2words spells them (without "and" and commas). */
-final class NumberWords {
+/**
+ * English number words, as num2words spells them (without "and" and commas). {@link
+ * io.github.zzuegg.brainiac.audio.narration.NumberSpeller} builds times, operators and German
+ * on top.
+ */
+public final class NumberWords {
 
     private static final String[] ONES = {"zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
         "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
@@ -16,8 +20,13 @@ final class NumberWords {
     private NumberWords() {
     }
 
-    /** {@code 1234} as "one thousand two hundred thirty-four". */
-    static String cardinal(BigInteger n) {
+    /**
+     * {@code 1234} as "one thousand two hundred thirty-four".
+     *
+     * @param n the number
+     * @return its words
+     */
+    public static String cardinal(BigInteger n) {
         if (n.signum() < 0) {
             return "minus " + cardinal(n.negate());
         }
@@ -48,7 +57,13 @@ final class NumberWords {
         return out.toString();
     }
 
-    static String cardinal(long n) {
+    /**
+     * {@code 1234} as "one thousand two hundred thirty-four".
+     *
+     * @param n the number
+     * @return its words
+     */
+    public static String cardinal(long n) {
         return cardinal(BigInteger.valueOf(n));
     }
 
@@ -83,8 +98,13 @@ final class NumberWords {
         return out.toString();
     }
 
-    /** {@code 21} as "twenty-first". */
-    static String ordinal(BigInteger n) {
+    /**
+     * {@code 21} as "twenty-first".
+     *
+     * @param n the number
+     * @return its ordinal words
+     */
+    public static String ordinal(BigInteger n) {
         String c = cardinal(n);
         int cut = Math.max(c.lastIndexOf(' '), c.lastIndexOf('-')) + 1;
         String last = c.substring(cut);
@@ -101,8 +121,13 @@ final class NumberWords {
         return c.substring(0, cut) + ord;
     }
 
-    /** A year: 1984 as "nineteen eighty-four", 1905 as "nineteen oh-five", 2005 as "two thousand five". */
-    static String year(int n) {
+    /**
+     * A year: 1984 as "nineteen eighty-four", 1905 as "nineteen oh-five", 2005 as "two thousand five".
+     *
+     * @param n the year
+     * @return its words
+     */
+    public static String year(int n) {
         int high = n / 100;
         int low = n % 100;
         if (high == 0 || (high % 10 == 0 && low < 10) || high >= 100) {
@@ -112,8 +137,13 @@ final class NumberWords {
         return cardinal(high) + " " + lowText;
     }
 
-    /** A decimal: "3.14" as "three point one four". */
-    static String decimal(String s) {
+    /**
+     * A decimal: "3.14" as "three point one four".
+     *
+     * @param s the digits, with a point
+     * @return its words
+     */
+    public static String decimal(String s) {
         int dot = s.indexOf('.');
         String whole = dot < 0 ? s : s.substring(0, dot);
         String frac = dot < 0 ? "" : s.substring(dot + 1).replaceAll("0+$", "");
