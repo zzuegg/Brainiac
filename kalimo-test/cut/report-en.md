@@ -19,8 +19,8 @@ Check: wav2vec2 on the whole clip; the sound part is every phone before the carr
 | g | Goat | en-g.wav | en-g-bare.wav | 45 | - | silent | en-g-word-seed2.wav | en-g-line-seed0.wav |
 | o | Otter | en-o.wav | en-o-bare.wav | 350 | ɑː | clean | en-o-word-seed1.wav | en-o-line-seed0.wav |
 | k | Kangaroo | en-k.wav | en-k-bare.wav | 45 | - | silent | en-k-word-seed0.wav | en-k-line-seed0.wav |
-| e | Egg | - | - | - | - | no usable cut | - | en-e-line-seed0.wav |
-| u | Up | - | - | - | - | no usable cut | - | en-u-line-seed0.wav |
+| e | Egg | en-e.wav | en-e-bare.wav | 350 | ɛ | clean | en-e-word-seed4.wav | en-e-line-seed0.wav |
+| u | Up | en-u.wav | en-u-bare.wav | 350 | a | clean | en-u-word-seed1.wav | en-u-line-seed0.wav |
 | r | Rain | en-r.wav | en-r-bare.wav | 350 | - | silent | en-r-word-seed0.wav | en-r-line-seed0.wav |
 | h | Horse | en-h.wav | en-h-bare.wav | 350 | h | clean | en-h-word-seed0.wav | en-h-line-seed0.wav |
 | b | Bird | en-b.wav | en-b-bare.wav | 45 | - | silent | en-b-word-seed0.wav | en-b-line-seed0.wav |
@@ -77,16 +77,16 @@ Check: wav2vec2 on the whole clip; the sound part is every phone before the carr
 | k | en-k-word-seed2.wav | Kangaroo | k | 45 |  | silent |
 | k | en-k-word-seed3.wav | Kangaroo | k | 45 |  | silent |
 | k | en-k-word-seed4.wav | Kangaroo! | k | 45 |  | silent |
-| e | en-e-word-seed0.wav | Egg | a | - | - | first phone a |
-| e | en-e-word-seed1.wav | Egg. | a | - | - | first phone a |
-| e | en-e-word-seed2.wav | Egg | a | - | - | first phone a |
+| e | en-e-word-seed0.wav | Egg | a | 325 | ɛ ɡ | not clean |
+| e | en-e-word-seed1.wav | Egg. | a | 350 | aː | not clean |
+| e | en-e-word-seed2.wav | Egg | a | 350 | aʊ | not clean |
 | e | en-e-word-seed3.wav | Egg | - | - | - | too few phones |
-| e | en-e-word-seed4.wav | Egg? | a | - | - | first phone a |
+| e | en-e-word-seed4.wav | Egg? | a | 350 | ɛ | clean |
 | u | en-u-word-seed0.wav |  | - | - | - | too few phones |
-| u | en-u-word-seed1.wav | Up! | a | - | - | first phone a |
+| u | en-u-word-seed1.wav | Up! | a | 350 | a | clean |
 | u | en-u-word-seed2.wav | Up! | - | - | - | too few phones |
-| u | en-u-word-seed3.wav | Up. | a | - | - | first phone a |
-| u | en-u-word-seed4.wav | Up! | a | - | - | first phone a |
+| u | en-u-word-seed3.wav | Up. | a | 350 | a r ɹ | not clean |
+| u | en-u-word-seed4.wav | Up! | a | 350 |  | silent |
 | r | en-r-word-seed0.wav | Rain | ɹ | 350 |  | silent |
 | r | en-r-word-seed1.wav | Rain | ɹ | 350 |  | silent |
 | r | en-r-word-seed2.wav | Rain | ɹ | 350 |  | silent |
