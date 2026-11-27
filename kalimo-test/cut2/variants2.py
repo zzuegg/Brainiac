@@ -109,10 +109,7 @@ for lang, sound in [('de', 'm'), ('de', 'f')]:
             lang, sound, v, lang, sound, v, src_f, start / sr, end / sr, len(b) / sr * 1000, n / sr * 1000,
             ' '.join(phones(clip, sr))))
         print(rows[-1])
-r = open(OUT + 'report.md', encoding='utf-8').read().rstrip('
-').split('
-')
+NL = chr(10)
+r = open(OUT + 'report.md', encoding='utf-8').read().rstrip(NL).split(NL)
 r.insert(5, 'v0 (m, f): the real sound only, at its natural length, no loop. v4 (m, f): the onset through a long steady piece (the middle 80 % of the sound), then that piece repeated twice with 30 ms crossfades.')
-open(OUT + 'report.md', 'w', encoding='utf-8').write('
-'.join(r + rows) + '
-')
+open(OUT + 'report.md', 'w', encoding='utf-8').write(NL.join(r + rows) + NL)

@@ -3,6 +3,7 @@
 Start: walked back from the aligner start to the first frame above the noise floor (+6 dB), then 20 ms earlier.
 Stops: from that start through the burst and the whole aspiration up to the voicing onset of the vowel (rise of 80-500 Hz energy), end at voicing minus 0 / 10 / 25 ms (v1 / v2 / v3), 3 ms fade in, 10 ms fade out.
 Held sounds: the real onset sound up to the next phone, lengthened by crossfading its steady middle to 450 / 600 / 750 ms (v1 / v2 / v3), 40 ms fades.
+v0 (m, f): the real sound only, at its natural length, no loop. v4 (m, f): the onset through a long steady piece (the middle 80 % of the sound), then that piece repeated twice with 30 ms crossfades.
 Clip = bare sound, 350 ms pause, whole carrier take.
 
 | variant | bare | source take | onset s | sound end s | bare ms | natural ms | phones heard in clip |
@@ -25,3 +26,7 @@ Clip = bare sound, 350 ms pause, whole carrier take.
 | en-t-v1 | en-t-v1-bare.wav | en-t-word-seed1.wav | 0.140 | 0.235 | 95 | 95 | t l aɪ k t aɪ ɡ ɚ |
 | en-t-v2 | en-t-v2-bare.wav | en-t-word-seed1.wav | 0.140 | 0.225 | 85 | 95 | t l aɪ k t aɪ ɡ ɚ |
 | en-t-v3 | en-t-v3-bare.wav | en-t-word-seed1.wav | 0.140 | 0.210 | 70 | 95 | l aɪ k t aɪ ɡ ɚ |
+| de-m-v0 | de-m-v0-bare.wav | de-m-word-seed0.wav | 0.385 | 0.540 | 155 | 155 | v iː m aʊ z |
+| de-m-v4 | de-m-v4-bare.wav | de-m-word-seed0.wav | 0.385 | 0.540 | 328 | 155 | v iː m aʊ z |
+| de-f-v0 | de-f-v0-bare.wav | de-f-word-seed1.wav | 0.195 | 0.370 | 175 | 175 | v iː f ɪ ʃ |
+| de-f-v4 | de-f-v4-bare.wav | de-f-word-seed1.wav | 0.195 | 0.370 | 378 | 175 | v iː f ɪ ʃ |
