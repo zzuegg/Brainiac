@@ -95,3 +95,5 @@ Lines whose best take is not a perfect Whisper match or where the letter name wa
 - de-o: the recogniser hears "uː" for "O"; Whisper hears "O". Needs an ear.
 - de-r, de-d: the letter is merged with "mit" in the phones (ɛ, d ɨ); Whisper hears R and D.
 - en-u: "you" is the right English name for U.
+
+**Fixed:** de-i-answer.wav is now "Ja! Insel fängt mit i an." (lowercase i, take i-answer-c-seed1): phones "m ɪ t iː a n", the German letter name. Lowercase "i" and "Ih" gave iː in 10 of 10 takes; "mit einem I" still gave "eye" in 2 of 5. Takes in ../game/fix/.
